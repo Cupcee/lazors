@@ -1,12 +1,13 @@
 // ----------------------------------------------------
 // tiny LiDAR simulator using Raylib bindings for Zig
 // runtime-configurable resolution version
-//  + bounding-box culling and analytic ground plane (steps 1-3)
+// + bounding-box culling and analytic ground plane (steps 1-3)
 // ----------------------------------------------------
 
 const std = @import("std");
 const rand = std.Random;
 const rl = @import("raylib"); // ziraylib package
+const Thread = std.Thread;
 
 //------------------------------------------------------------------
 // GLOBAL ALLOCATOR
@@ -78,7 +79,6 @@ const Sensor = struct {
     fov_h_deg: f32 = 120,
     fov_v_deg: f32 = 70,
     max_range: f32 = 70,
-    debug: bool = false,
 
     // –– runtime resolution ––
     res_h: usize,
@@ -93,11 +93,13 @@ const Sensor = struct {
     local_to_world: rl.Matrix,
 
     //--------------------------------------------------------------
-    pub fn init(allocator: std.mem.Allocator, res_h: usize, res_v: usize) !Sensor {
+    pub fn init(allocator: std.mem.Allocator, res_h: usize, res_v: usize, fov_h_deg: f32, fov_v_deg: f32) !Sensor {
         var self = Sensor{
             .allocator = allocator,
             .res_h = res_h,
             .res_v = res_v,
+            .fov_h_deg = fov_h_deg,
+            .fov_v_deg = fov_v_deg,
             .dirs = &.{},
             .points = &.{},
             .transforms = &.{},
@@ -188,12 +190,20 @@ const Sensor = struct {
 //------------------------------------------------------------------
 // SCENE CONSTRUCTION
 //------------------------------------------------------------------
-fn pushObject(mesh: rl.Mesh, class: u32, color: rl.Color, transform: rl.Matrix, list: *std.ArrayListAligned(Object, null)) !void {
+fn pushObject(
+    mesh: rl.Mesh,
+    class: u32,
+    color: rl.Color,
+    transform: rl.Matrix,
+    list: *std.ArrayListAligned(Object, null),
+) !void {
     var mdl = try rl.loadModelFromMesh(mesh);
     mdl.transform = transform;
     const local_bb = rl.getMeshBoundingBox(mesh);
     const world_bb = transformBBox(local_bb, transform);
-    list.appendAssumeCapacity(Object{ .model = mdl, .class = class, .color = color, .bbox_ws = world_bb });
+    list.appendAssumeCapacity(
+        Object{ .model = mdl, .class = class, .color = color, .bbox_ws = world_bb },
+    );
 }
 
 fn buildScene() ![]const Object {
@@ -203,15 +213,123 @@ fn buildScene() ![]const Object {
         list.deinit();
     }
     // cube
-    try pushObject(rl.genMeshCube(2, 2, 2), 1, rl.Color.dark_gray, rl.Matrix.translate(-4, 1, 8), &list);
+    try pushObject(
+        rl.genMeshCube(2, 2, 2),
+        1,
+        rl.Color.dark_gray,
+        rl.Matrix.translate(-4, 1, 8),
+        &list,
+    );
     // sphere
-    try pushObject(rl.genMeshSphere(1.5, 12, 12), 2, rl.Color.dark_gray, rl.Matrix.translate(0, 2, 5), &list);
+    try pushObject(
+        rl.genMeshSphere(1.5, 12, 12),
+        2,
+        rl.Color.dark_gray,
+        rl.Matrix.translate(0, 2, 5),
+        &list,
+    );
     // cylinder
-    try pushObject(rl.genMeshCylinder(2, 4, 12), 3, rl.Color.dark_gray, rl.Matrix.translate(4, 0.1, 8), &list);
+    try pushObject(
+        rl.genMeshCylinder(2, 4, 12),
+        3,
+        rl.Color.dark_gray,
+        rl.Matrix.translate(4, 0.1, 8),
+        &list,
+    );
     // ground plane
-    try pushObject(rl.genMeshCube(50, 0.2, 50), 0, rl.Color.beige, rl.Matrix.translate(0, -0.1, 25), &list);
+    try pushObject(
+        rl.genMeshCube(50, 0.2, 50),
+        0,
+        rl.Color.beige,
+        rl.Matrix.translate(0, -0.1, 25),
+        &list,
+    );
 
     return try list.toOwnedSlice();
+}
+
+//------------------------------------------------------------------
+// MULTITHREADING STRUCTURES
+//------------------------------------------------------------------
+
+/// Represents a single hit detected by a worker thread.
+const ThreadHit = struct {
+    hit_class: u32,
+    transform: rl.Matrix,
+};
+
+/// Data passed to each worker thread.
+const RaycastContext = struct {
+    thread_id: usize,
+    start_index: usize, // First ray index this thread handles
+    end_index: usize, // Last ray index + 1 this thread handles
+    sensor: *const Sensor, // Read-only access needed
+    models: []const Object, // Read-only access needed
+    jitter_scale: f32,
+    thread_prng: *rand.DefaultPrng, // Each thread gets its own PRNG state
+
+    // Output - each thread appends its hits here
+    thread_hits: *std.ArrayList(ThreadHit),
+
+    // Direct write access to the shared points buffer (safe due to non-overlapping ranges)
+    points_slice: []RayPoint,
+};
+
+/// The function executed by each worker thread.
+fn raycastWorker(ctx: *RaycastContext) void {
+    const rng = ctx.thread_prng.random(); // Use thread-local RNG
+
+    // Process the assigned range of rays
+    for (ctx.start_index..ctx.end_index) |i| {
+        // Index relative to the thread's points_slice
+        const slice_idx = i - ctx.start_index;
+
+        // apply a tiny random offset to break up aliasing
+        const dir_local = ctx.sensor.dirs[i];
+        // Manually apply rotation part of local_to_world (translation comes from sensor.pos)
+        const dir_ws = rl.Vector3.transform(dir_local, ctx.sensor.local_to_world);
+        const dir = rl.Vector3.normalize(.{
+            .x = dir_ws.x + (rng.float(f32) - 0.5) * ctx.jitter_scale,
+            .y = dir_ws.y + (rng.float(f32) - 0.5) * ctx.jitter_scale,
+            .z = dir_ws.z, // Assuming jitter only applied in x/y based on original code
+        });
+
+        const ray = rl.Ray{ .position = ctx.sensor.pos, .direction = dir };
+
+        var closest: f32 = ctx.sensor.max_range;
+        var contact: rl.Vector3 = undefined;
+        var hit: bool = false;
+        var hit_class: u32 = 0; // Default to 0 or some 'no hit' class if needed
+
+        for (ctx.models) |model| {
+            // Bounding box check (early out)
+            const bc = rl.getRayCollisionBox(ray, model.bbox_ws);
+            if (!bc.hit) continue;
+            if (bc.distance >= closest or bc.distance > ctx.sensor.max_range) continue;
+
+            // Precise mesh collision check
+            const rc = rl.getRayCollisionMesh(ray, model.model.meshes[0], model.model.transform);
+
+            if (rc.hit and rc.distance < closest) {
+                closest = rc.distance;
+                contact = rc.point;
+                hit = true;
+                hit_class = model.class;
+            }
+        }
+
+        // Write result to the shared points buffer (safe - distinct index `i`)
+        ctx.points_slice[slice_idx] = .{ .xyz = contact, .hit = hit, .hitClass = hit_class };
+
+        // If hit, record it for later merging
+        if (hit) {
+            const transform = rl.Matrix.translate(contact.x, contact.y, contact.z);
+            ctx.thread_hits.append(.{ .hit_class = hit_class, .transform = transform }) catch |err| {
+                std.log.err("Failed to append hit in thread {}: {s}\n", .{ ctx.thread_id, @errorName(err) });
+                return;
+            };
+        }
+    }
 }
 
 //------------------------------------------------------------------
@@ -220,12 +338,10 @@ fn buildScene() ![]const Object {
 pub fn main() !void {
     defer _ = gpa.deinit();
 
-    var prng = rand.DefaultPrng.init(@intCast(std.time.nanoTimestamp()));
-    const rng = prng.random();
-
     rl.initWindow(1240, 800, "lazors");
     rl.disableCursor();
     rl.setTargetFPS(60);
+    var debug = true;
 
     var camera = rl.Camera3D{
         .position = .{ .x = 0, .y = 2, .z = -8 },
@@ -237,13 +353,12 @@ pub fn main() !void {
     const cameraMode = rl.CameraMode.free;
 
     const models = try buildScene();
+    defer for (models) |*m| rl.unloadModel(m.*.model);
 
-    // pick any resolution you like:
-    var sensor = try Sensor.init(alloc, 260, 70);
+    var sensor = try Sensor.init(alloc, 260, 70, 360, 70);
     defer sensor.deinit();
     sensor.updateLocalAxes(sensor.fwd, sensor.up);
 
-    // hit-point sphere (one tiny sphere reused with instancing)
     var sphereMesh = rl.genMeshSphere(0.02, 4, 4);
     rl.uploadMesh(&sphereMesh, false);
     defer rl.unloadMesh(sphereMesh);
@@ -254,7 +369,6 @@ pub fn main() !void {
     instShader.locs[@intFromEnum(rl.ShaderLocationIndex.matrix_model)] =
         rl.getShaderLocation(instShader, "instanceTransform");
 
-    // one material per class so we can give each of them a tint
     const instanceMatColors: [3]rl.Color = .{ rl.Color.black, rl.Color.red, rl.Color.green };
     const CLASS_COUNT = 4;
     var instMats: [CLASS_COUNT]rl.Material = undefined;
@@ -264,36 +378,58 @@ pub fn main() !void {
         m.*.maps[@intFromEnum(rl.MATERIAL_MAP_DIFFUSE)].color = instanceMatColors[i];
     }
 
-    // helper buffers: one transform array per class
     var classTx: [CLASS_COUNT][]rl.Matrix = undefined;
     for (&classTx) |*slot| {
         slot.* = try alloc.alloc(rl.Matrix, sensor.res_h * sensor.res_v);
     }
     defer for (classTx) |buf| alloc.free(buf);
 
-    var classCount: [CLASS_COUNT]usize = .{ 0, 0, 0, 0 };
+    var classCount: [CLASS_COUNT]usize = .{0} ** CLASS_COUNT;
 
-    const jitter_scale: f32 = 0.002;
+    const jitter_scale: f32 = 0.005;
 
-    //------------------------------------------------------------------
-    // GAME LOOP
-    //------------------------------------------------------------------
+    const num_threads = blk: {
+        const cpu_count = std.Thread.getCpuCount() catch 1;
+        break :blk @max(1, cpu_count);
+    };
+    std.log.info("Using {} threads for raycasting.", .{num_threads});
+
+    var threads = try alloc.alloc(Thread, num_threads);
+    defer alloc.free(threads);
+
+    var contexts = try alloc.alloc(RaycastContext, num_threads);
+    defer alloc.free(contexts);
+
+    var thread_hit_lists = try alloc.alloc(std.ArrayList(ThreadHit), num_threads);
+    defer {
+        for (thread_hit_lists) |*list| list.deinit();
+        alloc.free(thread_hit_lists);
+    }
+    for (thread_hit_lists) |*list| {
+        list.* = std.ArrayList(ThreadHit).init(alloc);
+        try list.ensureTotalCapacity(sensor.res_h * sensor.res_v / num_threads + 10);
+    }
+
+    var thread_prngs = try alloc.alloc(rand.DefaultPrng, num_threads);
+    defer alloc.free(thread_prngs);
+    for (thread_prngs, 0..) |*rng_state, i| {
+        rng_state.* = rand.DefaultPrng.init(@intCast(i));
+    }
+
     while (!rl.windowShouldClose()) {
         rl.updateCamera(&camera, cameraMode);
 
-        // –– move the sensor with arrow keys ––
         const dt = rl.getFrameTime();
         if (rl.isKeyDown(rl.KeyboardKey.right)) sensor.pos.x -= 5 * dt;
         if (rl.isKeyDown(rl.KeyboardKey.left)) sensor.pos.x += 5 * dt;
         if (rl.isKeyDown(rl.KeyboardKey.up)) sensor.pos.z += 5 * dt;
         if (rl.isKeyDown(rl.KeyboardKey.down)) sensor.pos.z -= 5 * dt;
+        if (rl.isKeyDown(rl.KeyboardKey.k)) sensor.pos.y += 5 * dt;
+        if (rl.isKeyDown(rl.KeyboardKey.j)) sensor.pos.y -= 5 * dt;
         if (rl.isKeyDown(rl.KeyboardKey.h)) sensor.yaw += sensor.turn_speed * dt;
         if (rl.isKeyDown(rl.KeyboardKey.l)) sensor.yaw -= sensor.turn_speed * dt;
-        if (rl.isKeyDown(rl.KeyboardKey.k)) sensor.pitch += sensor.turn_speed * dt;
-        if (rl.isKeyDown(rl.KeyboardKey.j)) sensor.pitch -= sensor.turn_speed * dt;
-        if (rl.isKeyReleased(rl.KeyboardKey.tab)) sensor.debug = !sensor.debug;
+        if (rl.isKeyReleased(rl.KeyboardKey.tab)) debug = !debug;
 
-        // keep pitch inside (-90°, +90°)
         const half_pi: f32 = std.math.pi / 2.0 - 0.001;
         sensor.pitch = std.math.clamp(sensor.pitch, -half_pi, half_pi);
 
@@ -305,55 +441,67 @@ pub fn main() !void {
         sensor.up = .{ .x = 0, .y = 1, .z = 0 };
         sensor.updateLocalAxes(sensor.fwd, sensor.up);
 
-        // –– raycast pass ––
-        var hitCount: usize = 0;
         const nRays = sensor.res_h * sensor.res_v;
-        @memset(&classCount, 0);
+        var totalHitCount: usize = 0;
 
-        for (0..nRays) |i| {
-            // apply a tiny random offset to break up aliasing
-            const dir_local = sensor.dirs[i];
-            const dir_ws = rl.Vector3.transform(dir_local, sensor.local_to_world);
-            const dir = rl.Vector3.normalize(.{
-                .x = dir_ws.x + (rng.float(f32) - 0.5) * jitter_scale,
-                .y = dir_ws.y + (rng.float(f32) - 0.5) * jitter_scale,
-                .z = dir_ws.z,
-            });
+        for (thread_hit_lists) |*list| list.clearRetainingCapacity();
 
-            const ray = rl.Ray{ .position = sensor.pos, .direction = dir };
+        const rays_per_thread = nRays / num_threads;
+        var remaining_rays = nRays % num_threads;
+        var current_ray_index: usize = 0;
 
-            var closest: f32 = sensor.max_range;
-            var contact: rl.Vector3 = undefined;
-            var hit: bool = false;
-            var hitClass: u32 = sensor.points[i].hitClass;
-
-            for (models) |model| {
-                const bc = rl.getRayCollisionBox(ray, model.bbox_ws);
-                // prune search space by first checking for bbox collision
-                if (!bc.hit) continue;
-                if (bc.distance >= closest or bc.distance > sensor.max_range) continue;
-
-                const rc = rl.getRayCollisionMesh(ray, model.model.meshes[0], model.model.transform);
-
-                if (rc.hit and rc.distance < closest) {
-                    closest = rc.distance;
-                    contact = rc.point;
-                    hit = true;
-                    hitClass = model.class;
-                }
+        for (0..num_threads) |i| {
+            var chunk_size = rays_per_thread;
+            if (remaining_rays > 0) {
+                chunk_size += 1;
+                remaining_rays -= 1;
             }
 
-            sensor.points[i] = .{ .xyz = contact, .hit = hit, .hitClass = hitClass };
-            if (hit) {
-                const cls: usize = @intCast(hitClass);
-                classTx[cls][classCount[cls]] =
-                    rl.Matrix.translate(contact.x, contact.y, contact.z);
-                classCount[cls] += 1;
-                hitCount += 1;
+            const start_index = current_ray_index;
+            const end_index = @min(start_index + chunk_size, nRays);
+            const points_slice = if (start_index < end_index)
+                sensor.points[start_index..end_index]
+            else
+                sensor.points[0..0];
+
+            contexts[i] = .{
+                .thread_id = i,
+                .start_index = start_index,
+                .end_index = end_index,
+                .sensor = &sensor,
+                .models = models,
+                .jitter_scale = jitter_scale,
+                .thread_prng = &thread_prngs[i],
+                .thread_hits = &thread_hit_lists[i],
+                .points_slice = points_slice,
+            };
+
+            threads[i] = try Thread.spawn(.{}, raycastWorker, .{&contexts[i]});
+
+            current_ray_index = end_index;
+        }
+
+        for (threads) |t| t.join();
+
+        @memset(&classCount, 0);
+        totalHitCount = 0;
+        for (thread_hit_lists) |list| {
+            totalHitCount += list.items.len;
+            for (list.items) |hit| {
+                const cls: usize = @intCast(hit.hit_class);
+                if (cls < CLASS_COUNT) {
+                    const current_idx = classCount[cls];
+                    classTx[cls][current_idx] = hit.transform;
+                    classCount[cls] += 1;
+                } else {
+                    std.log.warn(
+                        "Hit with invalid class ID {} encountered during merge.",
+                        .{cls},
+                    );
+                }
             }
         }
 
-        // –– render everything ––
         rl.beginDrawing();
         rl.clearBackground(rl.Color.ray_white);
 
@@ -362,11 +510,10 @@ pub fn main() !void {
         rl.drawGrid(20, 1);
         for (models) |model| {
             rl.drawModel(model.model, rl.Vector3.zero(), 1, model.color);
-            rl.drawModelWires(model.model, rl.Vector3.zero(), 1, rl.Color.black);
         }
         rl.drawSphere(sensor.pos, 0.07, rl.Color.black);
 
-        if (sensor.debug) {
+        if (debug) {
             for (0..CLASS_COUNT) |cls| {
                 if (classCount[cls] > 0) {
                     rl.drawMeshInstanced(
@@ -381,18 +528,37 @@ pub fn main() !void {
         rl.endMode3D();
 
         rl.drawFPS(10, 10);
-        rl.drawText("Camera: WASD, Left-CTRL, Space. Sensor: arrow keys.", 10, 30, 20, rl.Color.dark_gray);
-        if (sensor.debug) {
-            rl.drawText(rl.textFormat("hitCount: %04i", .{hitCount}), 10, 50, 20, rl.Color.dark_gray);
+        rl.drawText(
+            "Camera: WASD, Left-CTRL, Space. Sensor: arrow keys, HJKL. TAB: Toggle Points",
+            10,
+            30,
+            20,
+            rl.Color.dark_gray,
+        );
+        if (debug) {
+            rl.drawText(
+                rl.textFormat("Total hitCount: %04i", .{totalHitCount}),
+                10,
+                50,
+                20,
+                rl.Color.dark_gray,
+            );
             for (classCount, 0..) |count, index| {
                 const _c: i32 = @intCast(count);
                 const _i: i32 = @intCast(index);
-                rl.drawText(rl.textFormat("[class %i]: %i", .{ _i, _c }), 10, 70 + (_i * 20), 20, rl.Color.dark_gray);
+                rl.drawText(
+                    rl.textFormat("[class %i]: %i", .{ _i, _c }),
+                    10,
+                    70 + (_i * 20),
+                    20,
+                    instanceMatColors[index],
+                );
             }
+        } else {
+            rl.drawText("Hit points hidden (Press TAB)", 10, 50, 20, rl.Color.dark_gray);
         }
         rl.endDrawing();
     }
 
-    for (models) |*m| rl.unloadModel(m.*.model);
     rl.closeWindow();
 }
