@@ -206,42 +206,63 @@ fn pushObject(
     );
 }
 
-fn buildScene() ![]const Object {
-    var list = try std.ArrayList(Object).initCapacity(alloc, 4);
+fn buildScene(objectCount: usize) ![]const Object {
+    // Pre-allocate for all dynamic objects + 1 ground plane
+    var list = try std.ArrayList(Object).initCapacity(alloc, objectCount + 1);
     errdefer {
+        // On error or exit, unload all models
         for (list.items) |m| rl.unloadModel(m.model);
         list.deinit();
     }
-    // cube
+
+    // Seed our per-scene PRNG (nanoseconds as u64)
+    var prng = rand.DefaultPrng.init(@intCast(std.time.nanoTimestamp()));
+    const rng = prng.random();
+
+    // Define how far out on the X/Z plane we’ll scatter objects
+    const planeHalfSize: f32 = 25.0;
+
+    // Round-robin through Cube, Sphere, Cylinder
+    for (0..objectCount) |i| {
+        const kind = i % 3;
+        var mesh: rl.Mesh = undefined;
+        var class: u32 = 0;
+        const color = rl.Color.dark_gray;
+
+        switch (kind) {
+            0 => {
+                mesh = rl.genMeshCube(2, 2, 2);
+                class = 1;
+            },
+            1 => {
+                mesh = rl.genMeshSphere(1.5, 12, 12);
+                class = 2;
+            },
+            2 => {
+                mesh = rl.genMeshCylinder(2, 4, 12);
+                class = 3;
+            },
+            else => unreachable,
+        }
+
+        // Random X and Z on top of ground plane, Y between 0 and 3
+        // random x in [-planeHalfSize, planeHalfSize]
+        const x = (rng.float(f32) * (planeHalfSize * 2.0)) - planeHalfSize;
+        // random z in [0, planeHalfSize*2]
+        const z = rng.float(f32) * (planeHalfSize * 2.0);
+        // random y in [0, 3]
+        const y = rng.float(f32) * 3.0;
+
+        const transform = rl.Matrix.translate(x, y, z);
+        try pushObject(mesh, class, color, transform, &list);
+    }
+
+    // Finally: a big, flat ground plane
     try pushObject(
-        rl.genMeshCube(2, 2, 2),
-        1,
-        rl.Color.dark_gray,
-        rl.Matrix.translate(-4, 1, 8),
-        &list,
-    );
-    // sphere
-    try pushObject(
-        rl.genMeshSphere(1.5, 12, 12),
-        2,
-        rl.Color.dark_gray,
-        rl.Matrix.translate(0, 2, 5),
-        &list,
-    );
-    // cylinder
-    try pushObject(
-        rl.genMeshCylinder(2, 4, 12),
-        3,
-        rl.Color.dark_gray,
-        rl.Matrix.translate(4, 0.1, 8),
-        &list,
-    );
-    // ground plane
-    try pushObject(
-        rl.genMeshCube(50, 0.2, 50),
+        rl.genMeshCube(planeHalfSize * 2, 0.2, planeHalfSize * 2),
         0,
         rl.Color.beige,
-        rl.Matrix.translate(0, -0.1, 25),
+        rl.Matrix.translate(0, -0.1, planeHalfSize),
         &list,
     );
 
@@ -340,7 +361,7 @@ pub fn main() !void {
 
     rl.initWindow(1240, 800, "lazors");
     rl.disableCursor();
-    rl.setTargetFPS(60);
+    rl.setTargetFPS(20);
     var debug = true;
 
     var camera = rl.Camera3D{
@@ -352,10 +373,10 @@ pub fn main() !void {
     };
     const cameraMode = rl.CameraMode.free;
 
-    const models = try buildScene();
+    const models = try buildScene(50);
     defer for (models) |*m| rl.unloadModel(m.*.model);
 
-    var sensor = try Sensor.init(alloc, 260, 70, 360, 70);
+    var sensor = try Sensor.init(alloc, 800, 192, 360, 70);
     defer sensor.deinit();
     sensor.updateLocalAxes(sensor.fwd, sensor.up);
 
@@ -412,8 +433,8 @@ pub fn main() !void {
 
     var thread_prngs = try alloc.alloc(rand.DefaultPrng, num_threads);
     defer alloc.free(thread_prngs);
-    for (thread_prngs, 0..) |*rng_state, i| {
-        rng_state.* = rand.DefaultPrng.init(@intCast(i));
+    for (thread_prngs) |*rng_state| {
+        rng_state.* = rand.DefaultPrng.init(@intCast(std.time.nanoTimestamp()));
     }
 
     while (!rl.windowShouldClose()) {
