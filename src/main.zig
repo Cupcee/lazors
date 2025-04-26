@@ -5,6 +5,7 @@
 // ----------------------------------------------------
 
 const std = @import("std");
+const builtin = @import("builtin");
 const rand = std.Random;
 const rl = @import("raylib"); // ziraylib package
 const Thread = std.Thread;
@@ -12,8 +13,7 @@ const Thread = std.Thread;
 //------------------------------------------------------------------
 // GLOBAL ALLOCATOR
 //------------------------------------------------------------------
-var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-const alloc = gpa.allocator();
+var debugAllocator: std.heap.DebugAllocator(.{}) = .init;
 
 //------------------------------------------------------------------
 // HELPER MATH
@@ -206,9 +206,9 @@ fn pushObject(
     );
 }
 
-fn buildScene(objectCount: usize) ![]const Object {
+fn buildScene(objectCount: usize, gpa: std.mem.Allocator) ![]const Object {
     // Pre-allocate for all dynamic objects + 1 ground plane
-    var list = try std.ArrayList(Object).initCapacity(alloc, objectCount + 1);
+    var list = try std.ArrayList(Object).initCapacity(gpa, objectCount + 1);
     errdefer {
         // On error or exit, unload all models
         for (list.items) |m| rl.unloadModel(m.model);
@@ -357,11 +357,19 @@ fn raycastWorker(ctx: *RaycastContext) void {
 // MAIN
 //------------------------------------------------------------------
 pub fn main() !void {
-    defer _ = gpa.deinit();
+    const alloc, const is_debug = alloc: {
+        break :alloc switch (builtin.mode) {
+            .Debug, .ReleaseSafe => .{ debugAllocator.allocator(), true },
+            .ReleaseFast, .ReleaseSmall => .{ std.heap.smp_allocator, false },
+        };
+    };
+    defer if (is_debug) {
+        _ = debugAllocator.deinit();
+    };
 
     rl.initWindow(1240, 800, "lazors");
     rl.disableCursor();
-    rl.setTargetFPS(20);
+    rl.setTargetFPS(24);
     var debug = true;
 
     var camera = rl.Camera3D{
@@ -373,7 +381,7 @@ pub fn main() !void {
     };
     const cameraMode = rl.CameraMode.free;
 
-    const models = try buildScene(50);
+    const models = try buildScene(50, alloc);
     defer for (models) |*m| rl.unloadModel(m.*.model);
 
     var sensor = try Sensor.init(alloc, 800, 192, 360, 70);
@@ -390,8 +398,8 @@ pub fn main() !void {
     instShader.locs[@intFromEnum(rl.ShaderLocationIndex.matrix_model)] =
         rl.getShaderLocation(instShader, "instanceTransform");
 
-    const instanceMatColors: [3]rl.Color = .{ rl.Color.black, rl.Color.red, rl.Color.green };
     const CLASS_COUNT = 4;
+    const instanceMatColors: [CLASS_COUNT]rl.Color = .{ rl.Color.black, rl.Color.red, rl.Color.green, rl.Color.yellow };
     var instMats: [CLASS_COUNT]rl.Material = undefined;
     for (&instMats, 0..) |*m, i| {
         m.* = try rl.loadMaterialDefault();
