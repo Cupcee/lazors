@@ -144,8 +144,102 @@ fn draw3D(
 }
 
 //------------------------------------------------------------------
-// MAIN
+// helpers for threaded ray-cast work in simulation
 //------------------------------------------------------------------
+
+/// Slice‐by-slice preparation of the contexts that each worker thread
+/// will receive.  All storage lives *outside* the function so there
+/// are no hidden allocations.
+fn prepareRaycastContexts(
+    contexts: []mt.RaycastContext,
+    sensor: *s.Sensor,
+    models: []const s.Object,
+    jitter_scale: f32,
+    thread_prngs: []rand.DefaultPrng,
+    thread_hit_lists: []std.ArrayList(mt.ThreadHit),
+    n_rays: usize,
+) void {
+    const num_threads = contexts.len;
+    const rays_per_thread = n_rays / num_threads;
+    var remaining_rays = n_rays % num_threads;
+    var ray_idx: usize = 0;
+
+    for (contexts, 0..) |*ctx, i| {
+        // clear & reuse the slice that will collect this thread’s hits
+        thread_hit_lists[i].clearRetainingCapacity();
+
+        var chunk = rays_per_thread;
+        if (remaining_rays > 0) {
+            chunk += 1;
+            remaining_rays -= 1;
+        }
+
+        const start = ray_idx;
+        const end = @min(start + chunk, n_rays);
+
+        ctx.* = .{
+            .thread_id = i,
+            .start_index = start,
+            .end_index = end,
+            .sensor = sensor,
+            .models = models,
+            .jitter_scale = jitter_scale,
+            .thread_prng = &thread_prngs[i],
+            .thread_hits = &thread_hit_lists[i],
+            .points_slice = sensor.points[start..end],
+        };
+
+        ray_idx = end;
+    }
+}
+
+/// Spawn workers
+/// Returns count of spawned workers
+fn launchRaycastWorkers(
+    threads: []Thread,
+    contexts: []const mt.RaycastContext,
+) !usize {
+    var spawned: usize = 0;
+
+    for (contexts, 0..) |ctx, i| {
+        if (ctx.start_index == ctx.end_index) continue; // nothing to do
+
+        threads[spawned] = try Thread.spawn(.{}, mt.raycastWorker, .{&contexts[i]});
+        spawned += 1;
+    }
+    return spawned;
+}
+
+fn waitForWorkers(threads: []Thread, spawnedCount: usize) void {
+    for (threads[0..spawnedCount]) |t| t.join();
+}
+
+/// Merge per-thread hit‐lists into the per-class instance matrices and
+/// return the total number of hits.
+fn mergeThreadHits(
+    thread_hit_lists: []const std.ArrayList(mt.ThreadHit),
+    class_tx: *[CLASS_COUNT][]rl.Matrix,
+    class_counter: *[CLASS_COUNT]usize,
+) usize {
+    @memset(class_counter, 0);
+
+    var total: usize = 0;
+    for (thread_hit_lists) |list| {
+        total += list.items.len;
+        for (list.items) |hit| {
+            const cls: usize = @intCast(hit.hit_class);
+            if (cls < CLASS_COUNT) {
+                const idx = class_counter[cls];
+                class_tx[cls][idx] = hit.transform;
+                class_counter[cls] += 1;
+            } else {
+                std.log.warn("Hit with invalid class ID {} encountered.", .{cls});
+            }
+        }
+    }
+    return total;
+}
+
 pub fn main() !void {
     const alloc, const is_debug = alloc: {
         break :alloc switch (builtin.mode) {
@@ -161,56 +255,37 @@ pub fn main() !void {
     rl.disableCursor();
     rl.setTargetFPS(24);
 
+    // simulation init
     var simulation = s.Simulation{};
 
+    // 3D camera init
     var camera, const cameraMode = initCamera();
 
+    // 3D scene init
     const models = try scene.buildScene(50, alloc);
     defer for (models) |*m| rl.unloadModel(m.*.model);
 
+    // sensor state init
     var sensor = try s.Sensor.init(alloc, 800, 192, 360, 70);
     defer sensor.deinit();
     sensor.updateLocalAxes(sensor.fwd, sensor.up);
     const maxPoints = sensor.res_h * sensor.res_v;
 
+    // prepare mesh and materials for visualizing hits with instanced rendering
     var sphereMesh = rl.genMeshSphere(0.02, 4, 4);
+    // loads mesh to GPU
     rl.uploadMesh(&sphereMesh, false);
     defer rl.unloadMesh(sphereMesh);
-
+    var classCounter: [CLASS_COUNT]usize = .{0} ** CLASS_COUNT;
     const instMats, const instMatColors = try initInstanceMats();
     var classTx = try initClassTxs(alloc, maxPoints);
     defer for (classTx) |buf| alloc.free(buf);
 
-    var classCounter: [CLASS_COUNT]usize = .{0} ** CLASS_COUNT;
-
-    // const numThreads = mt.getNumThreads();
-    const numThreads = blk: {
-        const cpu_count = Thread.getCpuCount() catch 1;
-        break :blk @max(1, cpu_count);
-    };
+    // prepare multithreading for raycasting
+    const numThreads = mt.getNumThreads();
     std.log.info("Using {} threads for raycasting.", .{numThreads});
-
-    var threads = try alloc.alloc(Thread, numThreads);
-    defer alloc.free(threads);
-
-    var contexts = try alloc.alloc(mt.RaycastContext, numThreads);
-    defer alloc.free(contexts);
-
-    var threadHitLists = try alloc.alloc(std.ArrayList(mt.ThreadHit), numThreads);
-    defer {
-        for (threadHitLists) |*list| list.deinit();
-        alloc.free(threadHitLists);
-    }
-    for (threadHitLists) |*list| {
-        list.* = std.ArrayList(mt.ThreadHit).init(alloc);
-        try list.ensureTotalCapacity(maxPoints / numThreads + 10);
-    }
-
-    var threadPrngs = try alloc.alloc(rand.DefaultPrng, numThreads);
-    defer alloc.free(threadPrngs);
-    for (threadPrngs) |*rng_state| {
-        rng_state.* = rand.DefaultPrng.init(@intCast(std.time.nanoTimestamp()));
-    }
+    var threads = try mt.ThreadResources.init(alloc, numThreads, maxPoints);
+    defer threads.deinit(alloc);
 
     while (!rl.windowShouldClose()) {
         rl.updateCamera(&camera, cameraMode);
@@ -218,67 +293,27 @@ pub fn main() !void {
         const dt = rl.getFrameTime();
         sensorDt(&sensor, dt, &simulation.debug);
 
-        const nRays = maxPoints;
-        var totalHitCount: usize = 0;
+        // 1. Build the contexts for this frame’s ray-casts
+        prepareRaycastContexts(
+            threads.contexts,
+            &sensor,
+            models,
+            JITTER_SCALE,
+            threads.prngs,
+            threads.hitLists,
+            maxPoints,
+        );
 
-        for (threadHitLists) |*list| list.clearRetainingCapacity();
+        // 2. Fire off worker threads
+        const spawnedCount = try launchRaycastWorkers(threads.threads, threads.contexts);
+        waitForWorkers(threads.threads, spawnedCount);
 
-        const rays_per_thread = nRays / numThreads;
-        var remaining_rays = nRays % numThreads;
-        var current_ray_index: usize = 0;
-
-        for (0..numThreads) |i| {
-            var chunk_size = rays_per_thread;
-            if (remaining_rays > 0) {
-                chunk_size += 1;
-                remaining_rays -= 1;
-            }
-
-            const start_index = current_ray_index;
-            const end_index = @min(start_index + chunk_size, nRays);
-            const threadPointsSlice = if (start_index < end_index)
-                sensor.points[start_index..end_index]
-            else
-                sensor.points[0..0];
-            // break;
-
-            contexts[i] = .{
-                .thread_id = i,
-                .start_index = start_index,
-                .end_index = end_index,
-                .sensor = &sensor,
-                .models = models,
-                .jitter_scale = JITTER_SCALE,
-                .thread_prng = &threadPrngs[i],
-                .thread_hits = &threadHitLists[i],
-                .points_slice = threadPointsSlice,
-            };
-
-            threads[i] = try Thread.spawn(.{}, mt.raycastWorker, .{&contexts[i]});
-
-            current_ray_index = end_index;
-        }
-
-        for (threads) |t| t.join();
-
-        @memset(&classCounter, 0);
-        totalHitCount = 0;
-        for (threadHitLists) |list| {
-            totalHitCount += list.items.len;
-            for (list.items) |hit| {
-                const cls: usize = @intCast(hit.hit_class);
-                if (cls < CLASS_COUNT) {
-                    const current_idx = classCounter[cls];
-                    classTx[cls][current_idx] = hit.transform;
-                    classCounter[cls] += 1;
-                } else {
-                    std.log.warn(
-                        "Hit with invalid class ID {} encountered during merge.",
-                        .{cls},
-                    );
-                }
-            }
-        }
+        // 3. Merge results
+        const totalHitCount = mergeThreadHits(
+            threads.hitLists,
+            &classTx,
+            &classCounter,
+        );
 
         rl.beginDrawing();
         defer rl.endDrawing();

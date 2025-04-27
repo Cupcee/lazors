@@ -32,7 +32,7 @@ pub const RaycastContext = struct {
 };
 
 /// The function executed by each worker thread.
-pub fn raycastWorker(ctx: *RaycastContext) void {
+pub fn raycastWorker(ctx: *const RaycastContext) void {
     const rng = ctx.thread_prng.random(); // Use thread-local RNG
 
     // Process the assigned range of rays
@@ -88,9 +88,63 @@ pub fn raycastWorker(ctx: *RaycastContext) void {
     }
 }
 
+/// Holds everything needed to kick off our ray‐cast worker threads.
+pub const ThreadResources = struct {
+    threads: []Thread,
+    contexts: []RaycastContext,
+    hitLists: []std.ArrayList(ThreadHit),
+    prngs: []rand.DefaultPrng,
+
+    /// Allocate all thread resources.
+    pub fn init(
+        alloc: std.mem.Allocator,
+        numThreads: usize,
+        maxPoints: usize,
+    ) !ThreadResources {
+        // 1) allocate the arrays themselves
+        const threads = try alloc.alloc(Thread, numThreads);
+        const contexts = try alloc.alloc(RaycastContext, numThreads);
+        const hitLists = try alloc.alloc(std.ArrayList(ThreadHit), numThreads);
+        const prngs = try alloc.alloc(rand.DefaultPrng, numThreads);
+
+        // 2) init each hitList with enough capacity
+        const baseCap = maxPoints / numThreads + 10;
+        for (hitLists) |*list| {
+            list.* = std.ArrayList(ThreadHit).init(alloc);
+            try list.ensureTotalCapacity(baseCap);
+        }
+
+        // 3) seed each PRNG
+        for (prngs) |*r| {
+            r.* = rand.DefaultPrng.init(@intCast(std.time.nanoTimestamp()));
+        }
+
+        return ThreadResources{
+            .threads = threads,
+            .contexts = contexts,
+            .hitLists = hitLists,
+            .prngs = prngs,
+        };
+    }
+
+    /// Free everything this struct allocated.
+    pub fn deinit(self: *ThreadResources, alloc: std.mem.Allocator) void {
+        // deinit each hitList
+        for (self.hitLists) |*list| {
+            list.*.deinit();
+        }
+
+        alloc.free(self.hitLists);
+        alloc.free(self.prngs);
+        alloc.free(self.contexts);
+        alloc.free(self.threads);
+    }
+};
+
 pub fn getNumThreads() usize {
-    return blk: {
+    const numThreads = blk: {
         const cpu_count = Thread.getCpuCount() catch 1;
         break :blk @max(1, cpu_count);
     };
+    return numThreads;
 }
