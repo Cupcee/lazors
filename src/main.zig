@@ -8,15 +8,15 @@ const builtin = @import("builtin");
 const rand = std.Random;
 const rl = @import("raylib"); // ziraylib package
 const s = @import("structs.zig");
-const mt = @import("multithreading.zig");
+const rc = @import("raycasting.zig");
 const tp = @import("thread_pool.zig");
 const scene = @import("scene.zig");
-const CLASS_COUNT = mt.CLASS_COUNT;
+const CLASS_COUNT = rc.CLASS_COUNT;
 const WINDOW_WIDTH = 1240;
 const WINDOW_HEIGHT = 800;
 const JITTER_SCALE = 0.002;
 
-const RayPool = tp.ThreadPool(mt.RaycastContext, mt.raycastWorker);
+const RayPool = tp.ThreadPool(rc.RaycastContext, rc.raycastWorker);
 
 var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
 
@@ -188,10 +188,10 @@ pub fn main() !void {
     defer for (class_tx) |buf| alloc.free(buf);
 
     // prepare multithreading for raycasting
-    const num_threads = mt.getNumThreads();
-    var thread_resources = try mt.ThreadResources.init(alloc, num_threads, max_points);
+    const num_threads = rc.getNumThreads();
+    var thread_resources = try rc.ThreadResources.init(alloc, num_threads, max_points);
     defer thread_resources.deinit(alloc);
-    const thread_ctx = try alloc.alloc(mt.RaycastContext, num_threads);
+    const thread_ctx = try alloc.alloc(rc.RaycastContext, num_threads);
     // defer for (thread_ctx) |ctx| alloc.free(ctx);
     var pool = try RayPool.init(alloc, num_threads, thread_ctx);
     defer pool.deinit(alloc);
@@ -204,7 +204,7 @@ pub fn main() !void {
         sensorDt(&sensor, dt, &simulation.debug);
 
         // 1. Build the contexts for this frame’s ray-casts
-        mt.prepareRaycastContexts(
+        rc.prepareRaycastContexts(
             thread_ctx,
             &sensor,
             models,
@@ -220,7 +220,7 @@ pub fn main() !void {
         pool.wait(); // blocks until all rays done
 
         // 3. Merge results
-        const total_hit_count = mt.mergeThreadHits(
+        const total_hit_count = rc.mergeThreadHits(
             thread_resources.hits,
             &class_tx,
             &class_counter,
