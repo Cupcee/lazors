@@ -27,6 +27,7 @@ pub const RaycastContext = struct {
     thread_prng: *rand.DefaultPrng,
     thread_hits: *std.ArrayList(ThreadHit),
     points_slice: []s.RayPoint,
+    skip: bool = false, // this allows skipping running the workload, if it is empty
 };
 
 /// Worker function for a thread.
@@ -81,10 +82,6 @@ pub fn raycastWorker(ctx: *const RaycastContext) void {
     }
 }
 
-//------------------------------------------------------------------
-// helpers for threaded ray-cast work in simulation
-//------------------------------------------------------------------
-
 /// Slice‐by-slice preparation of the contexts that each worker thread
 /// will receive.  All storage lives *outside* the function so there
 /// are no hidden allocations.
@@ -125,31 +122,11 @@ pub fn prepareRaycastContexts(
             .thread_prng = &thread_prngs[i],
             .thread_hits = &thread_hit_lists[i],
             .points_slice = sensor.points[start..end],
+            .skip = start == end,
         };
 
         ray_idx = end;
     }
-}
-
-/// Spawn workers
-/// Returns count of spawned workers
-fn launchRaycastWorkers(
-    threads: []Thread,
-    contexts: []const RaycastContext,
-) !usize {
-    var spawned: usize = 0;
-
-    for (contexts, 0..) |ctx, i| {
-        if (ctx.start_index == ctx.end_index) continue; // nothing to do
-
-        threads[spawned] = try Thread.spawn(.{}, raycastWorker, .{&contexts[i]});
-        spawned += 1;
-    }
-    return spawned;
-}
-
-fn waitForWorkers(threads: []Thread, spawnedCount: usize) void {
-    for (threads[0..spawnedCount]) |t| t.join();
 }
 
 /// Merge per-thread hit‐lists into the per-class instance matrices and
@@ -178,134 +155,53 @@ pub fn mergeThreadHits(
     return total;
 }
 
-// ────────────────────────────────────────────────────────────────
-//  THREAD-POOL
-// ────────────────────────────────────────────────────────────────
-const State = enum(u8) { idle, working, shutdown };
-
-/// All the memory we keep for the lifetime of the program
+/// Keeps arrays that are *indexed by thread*
+/// (hit lists, PRNGs, …).
 pub const ThreadResources = struct {
-    // user-visible slices (unchanged)
-    contexts: []RaycastContext,
     hits: []std.ArrayList(ThreadHit),
     prngs: []rand.DefaultPrng,
 
-    // private pool machinery
-    threads: []Thread,
-    state: std.atomic.Value(State),
-    next_job: std.atomic.Value(usize),
-    job_count: std.atomic.Value(usize),
-    done_count: std.atomic.Value(usize),
-
-    wg: Thread.WaitGroup,
-    workers_started: bool = false,
-
-    // ───── initialise once ─────
+    // ───────────────────────────────────────
+    //  life-cycle
+    // ───────────────────────────────────────
     pub fn init(
         alloc: std.mem.Allocator,
         num_threads: usize,
+        /// Worst-case number of ray hits per frame –
+        /// lets us pre-size every list once.
         max_points: usize,
     ) !ThreadResources {
-        // allocate storage ----------------------------------------------------
-        const tr = ThreadResources{
-            .threads = try alloc.alloc(Thread, num_threads),
-            .contexts = try alloc.alloc(RaycastContext, num_threads),
-            .hits = try alloc.alloc(std.ArrayList(ThreadHit), num_threads),
-            .prngs = try alloc.alloc(rand.DefaultPrng, num_threads),
-
-            .state = std.atomic.Value(State).init(.idle),
-            .next_job = std.atomic.Value(usize).init(0),
-            .job_count = std.atomic.Value(usize).init(0),
-            .done_count = std.atomic.Value(usize).init(0),
-            .wg = .{},
-        };
-
-        // per-thread helpers ---------------------------------------------------
+        // -------- 1. per-thread hit arrays  --------
         const cap = max_points / num_threads + 32;
-        for (tr.hits) |*l| {
+        const lists = try alloc.alloc(std.ArrayList(ThreadHit), num_threads);
+        for (lists) |*l| {
             l.* = std.ArrayList(ThreadHit).init(alloc);
             try l.ensureTotalCapacity(cap);
         }
-        for (tr.prngs) |*p| {
-            p.* = rand.DefaultPrng.init(@intCast(std.time.nanoTimestamp()));
-        }
-        return tr;
+
+        // -------- 2. per-thread PRNGs  --------------
+        const prngs = try alloc.alloc(rand.DefaultPrng, num_threads);
+        for (prngs, 0..) |*p, i|
+            p.* = rand.DefaultPrng.init(@intCast(std.time.nanoTimestamp() + i));
+
+        return ThreadResources{
+            .hits = lists,
+            .prngs = prngs,
+        };
     }
 
-    pub fn startWorkers(self: *ThreadResources) !void {
-        if (self.workers_started) return error.AlreadyStarted;
-        for (self.threads) |*t| t.* = try Thread.spawn(.{}, workerLoop, .{self});
-        self.workers_started = true;
+    /// Reset every hit-list ready for a new frame.
+    pub fn clearHitLists(self: *ThreadResources) void {
+        for (self.hits) |*l| l.clearRetainingCapacity();
     }
 
-    // ───── one call per frame ─────
-    pub fn dispatch(self: *ThreadResources, job_count: usize) void {
-        self.wg.reset();
-        if (job_count == 0) return;
-        self.wg.startMany(job_count);
-        self.next_job.store(0, Release);
-        self.state.store(.working, Release);
-    }
-
-    /// Busy-wait until every worker has called finish()
-    pub fn wait(self: *ThreadResources) !void {
-        self.wg.wait();
-        self.state.store(.idle, Release);
-    }
-
-    // ───── shutdown at exit ─────
     pub fn deinit(self: *ThreadResources, alloc: std.mem.Allocator) void {
-        // signal workers to exit
-        self.state.store(.shutdown, Release);
-        for (self.threads) |t| t.join();
-
-        // free memory
-        for (self.hits) |*l| l.*.deinit();
+        for (self.hits) |*l| l.deinit();
         alloc.free(self.hits);
         alloc.free(self.prngs);
-        alloc.free(self.contexts);
-        alloc.free(self.threads);
     }
 };
 
-/// Per-thread infinite loop
-fn workerLoop(pool: *ThreadResources) void {
-    while (true) {
-        // park until somebody sets state=working
-        while (pool.state.load(Acquire) == .idle) {
-            Thread.yield() catch {};
-        }
-
-        if (pool.state.load(Acquire) == .shutdown) return;
-
-        while (true) {
-            const idx = pool.next_job.fetchAdd(1, AcqRel);
-            if (idx >= pool.contexts.len) break;
-
-            const ctx = &pool.contexts[idx];
-            if (ctx.start_index != ctx.end_index) {
-                raycastWorker(ctx); // do real work
-            }
-            pool.wg.finish();
-        }
-        std.Thread.yield() catch {};
-    }
-}
-
-/// Utility: return how many contexts have real work this frame
-pub fn countActive(contexts: []const RaycastContext) usize {
-    var n: usize = 0;
-    for (contexts) |c| {
-        if (c.start_index != c.end_index) n += 1;
-    }
-    return n;
-}
-
-/// Handier alias so the caller’s code reads the same as before
-pub const Thread = std.Thread;
-pub const ThreadSpawn = std.Thread.spawn;
-
-/// Expose same helper as before
 pub fn getNumThreads() usize {
     return @max(1, std.Thread.getCpuCount() catch 1);
 }

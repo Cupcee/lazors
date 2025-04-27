@@ -9,11 +9,14 @@ const rand = std.Random;
 const rl = @import("raylib"); // ziraylib package
 const s = @import("structs.zig");
 const mt = @import("multithreading.zig");
+const tp = @import("thread_pool.zig");
 const scene = @import("scene.zig");
 const CLASS_COUNT = mt.CLASS_COUNT;
 const WINDOW_WIDTH = 1240;
 const WINDOW_HEIGHT = 800;
 const JITTER_SCALE = 0.002;
+
+const RayPool = tp.ThreadPool(mt.RaycastContext, mt.raycastWorker);
 
 var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
 
@@ -186,10 +189,13 @@ pub fn main() !void {
 
     // prepare multithreading for raycasting
     const num_threads = mt.getNumThreads();
-    std.log.info("Using {} threads for raycasting.", .{num_threads});
-    var threads = try mt.ThreadResources.init(alloc, num_threads, max_points);
-    try threads.startWorkers();
-    defer threads.deinit(alloc);
+    var thread_resources = try mt.ThreadResources.init(alloc, num_threads, max_points);
+    defer thread_resources.deinit(alloc);
+    const thread_ctx = try alloc.alloc(mt.RaycastContext, num_threads);
+    // defer for (thread_ctx) |ctx| alloc.free(ctx);
+    var pool = try RayPool.init(alloc, num_threads, thread_ctx);
+    defer pool.deinit(alloc);
+    try pool.startWorkers();
 
     while (!rl.windowShouldClose()) {
         rl.updateCamera(&camera, camera_mode);
@@ -199,23 +205,23 @@ pub fn main() !void {
 
         // 1. Build the contexts for this frame’s ray-casts
         mt.prepareRaycastContexts(
-            threads.contexts,
+            thread_ctx,
             &sensor,
             models,
             JITTER_SCALE,
-            threads.prngs,
-            threads.hits,
+            thread_resources.prngs,
+            thread_resources.hits,
             max_points,
         );
 
         // 2. let the pool run them
-        const n_jobs = threads.contexts.len;
-        threads.dispatch(n_jobs);
-        try threads.wait(); // blocks until all rays done
+        const n_jobs = pool.contexts.len;
+        pool.dispatch(n_jobs);
+        pool.wait(); // blocks until all rays done
 
         // 3. Merge results
         const total_hit_count = mt.mergeThreadHits(
-            threads.hits,
+            thread_resources.hits,
             &class_tx,
             &class_counter,
         );
