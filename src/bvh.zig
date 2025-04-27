@@ -264,31 +264,3 @@ fn rayTriangleIntersect(tri: Triangle, ray: rl.Ray, t_min: f32, t_max: f32) ?f32
     if (t_hit < t_min or t_hit > t_max) return null;
     return t_hit;
 }
-
-///////////////////////////////////////////////////////////////////////////////
-// Example (zig run bvh.zig)
-///////////////////////////////////////////////////////////////////////////////
-// pub fn main() !void {
-//     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-//     defer std.debug.assert(gpa.deinit() == 0);
-//     const alloc = gpa.allocator();
-//
-//     // Quad in XY plane (two triangles)
-//     const verts = &[_]rl.Vector3{
-//         rl.Vector3.init(-1, -1, 0),
-//         rl.Vector3.init(1, -1, 0),
-//         rl.Vector3.init(1, 1, 0),
-//         rl.Vector3.init(-1, 1, 0),
-//     };
-//     const idx = &[_]u32{ 0, 1, 2, 0, 2, 3 };
-//
-//     var bvh = try BVH.build(alloc, verts, idx);
-//     defer bvh.deinit();
-//
-//     const ray = Ray{ .origin = rl.Vector3.init(0, 0, -2), .dir = rl.Vector3.init(0, 0, 1) };
-//     if (bvh.intersect(ray, 0.0, std.math.inf(f32))) |hit| {
-//         std.debug.print("Hit tri {} at t = {}\n", .{ hit.prim_index, hit.t });
-//     } else {
-//         std.debug.print("No hit\n", .{});
-//     }
-// }

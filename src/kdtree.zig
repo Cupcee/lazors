@@ -1,6 +1,7 @@
 const std = @import("std");
 const rl = @import("raylib");
 const s = @import("structs.zig");
+const MAX_RANGE = 100; // TODO: should take this from sensor instead
 
 pub const HitResult = struct {
     hit: bool = false,
@@ -123,15 +124,19 @@ pub const KDTree = struct {
 
     pub fn closestHit(
         self: *const KDTree,
-        ray_ws: rl.Ray,
+        ray_in: rl.Ray,
         models: []const s.Object,
         max_range: f32,
     ) HitResult {
+        // ── 1. Work with a *normalised* world-space ray ─────────────────────────
+        var ray_ws = ray_in;
+        ray_ws.direction = rl.Vector3.normalize(ray_ws.direction); // 🔑
+
         var best = HitResult{ .distance = max_range };
 
         var stack: [64]u32 = undefined;
         var sp: usize = 1;
-        stack[0] = 0; // root
+        stack[0] = 0; // push root
 
         while (sp > 0) {
             sp -= 1;
@@ -142,31 +147,29 @@ pub const KDTree = struct {
                 for (self.prim_idx[node.first .. node.first + node.count]) |pi| {
                     const obj = models[pi];
 
-                    // 1. quick reject with world-space AABB
-                    const bc = rl.getRayCollisionBox(ray_ws, obj.bbox_ws);
-                    if (!bc.hit or bc.distance >= best.distance) continue;
+                    // Note: this actually slows things?
+                    // const bc = rl.getRayCollisionBox(ray_ws, obj.bbox_ws);
+                    // if (!bc.hit or bc.distance >= best.distance) continue;
 
-                    // 2. transform ray to the object’s space
-                    const ray_ms = toLocalRay(ray_ws, obj.inv_transform);
+                    const inv = obj.inv_transform; // cached inverse
+                    const ray_ms = toLocalRay(ray_ws, inv);
 
-                    // 3. precise test inside the mesh BVH
-                    if (obj.bvh.intersect(ray_ms, 0.0, std.math.inf(f32))) |hit| {
-                        // local → world
+                    if (obj.bvh.intersect(ray_ms, 0.0, MAX_RANGE)) |hit| {
                         const hit_ms = ray_ms.position.add(ray_ms.direction.scale(hit.t));
                         const hit_ws = rl.Vector3.transform(hit_ms, obj.model.transform);
-
                         const dist_ws = hit_ws.subtract(ray_ws.position).length();
+
                         if (dist_ws < best.distance) {
                             best = .{
                                 .hit = true,
-                                .distance = dist_ws, // world units
+                                .distance = dist_ws,
                                 .point = hit_ws,
                                 .hit_class = obj.class,
                             };
                         }
                     }
                 }
-            } else { // push children (right first)
+            } else { // interior node
                 stack[sp] = node.right;
                 sp += 1;
                 stack[sp] = node.left;
