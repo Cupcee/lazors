@@ -1,5 +1,6 @@
 const rl = @import("raylib");
 const std = @import("std");
+const bvh = @import("bvh.zig");
 
 //------------------------------------------------------------------
 // BASIC TYPES
@@ -16,6 +17,8 @@ pub const Object = struct {
     color: rl.Color,
     /// world-space axis-aligned bounding box (step 1)
     bbox_ws: rl.BoundingBox,
+    bvh: bvh.BVH,
+    inv_transform: rl.Matrix, // cached
 };
 
 pub const Simulation = struct {

@@ -3,6 +3,44 @@ const std = @import("std");
 const rand = std.Random;
 const s = @import("structs.zig");
 const math = @import("math.zig");
+const bvh = @import("bvh.zig");
+
+/// Build a BVH for a *single* raylib Mesh.
+/// The function copies the data so the BVH stays valid even if the Mesh is unloaded.
+///
+/// mesh      : pointer to the mesh you want to accelerate
+/// alloc     : allocator used both for the copies *and* inside BVH.build()
+pub fn buildBVHFromMesh(alloc: std.mem.Allocator, mesh: *const rl.Mesh) !bvh.BVH {
+    // ---- vertices ----------------------------------------------------------
+    const vcount: usize = @intCast(mesh.vertexCount);
+    const verts_f32 =
+        @as([*]const f32, @ptrCast(mesh.vertices))[0 .. vcount * 3];
+
+    var verts = try alloc.alloc(rl.Vector3, vcount);
+    var i: usize = 0;
+    while (i < vcount) : (i += 1) {
+        verts[i] = rl.Vector3{
+            .x = verts_f32[i * 3 + 0],
+            .y = verts_f32[i * 3 + 1],
+            .z = verts_f32[i * 3 + 2],
+        };
+    }
+
+    // ---- indices -----------------------------------------------------------
+    const icount: u32 = @intCast(mesh.triangleCount * 3);
+    var indices = try alloc.alloc(u32, icount);
+
+    if (mesh.indices != null) {
+        const src = @as([*]const u16, @ptrCast(mesh.indices))[0..icount];
+        for (src, 0..) |idx16, k| indices[k] = idx16; // widen to u32
+    } else {
+        // Non-indexed mesh: triangles are laid out sequentially
+        for (indices, 0..) |*dst, k| dst.* = @intCast(k);
+    }
+
+    // ---- build BVH ---------------------------------------------------------
+    return bvh.BVH.build(alloc, verts, indices);
+}
 
 //------------------------------------------------------------------
 // SCENE CONSTRUCTION
@@ -13,17 +51,20 @@ fn pushObject(
     color: rl.Color,
     transform: rl.Matrix,
     list: *std.ArrayListAligned(s.Object, null),
+    alloc: std.mem.Allocator,
 ) !void {
+    const mesh_bvh = try buildBVHFromMesh(alloc, &mesh);
     var mdl = try rl.loadModelFromMesh(mesh);
     mdl.transform = transform;
     const local_bb = rl.getMeshBoundingBox(mesh);
     const world_bb = math.transformBBox(local_bb, transform);
-    // const inv_model = rl.MatrixIdentity(); // if you ever animate, handle xform
     const obj = s.Object{
         .model = mdl,
         .class = class,
         .color = color,
         .bbox_ws = world_bb,
+        .bvh = mesh_bvh,
+        .inv_transform = rl.Matrix.invert(mdl.transform),
     };
     list.appendAssumeCapacity(obj);
 }
@@ -76,7 +117,7 @@ pub fn buildScene(object_count: usize, alloc: std.mem.Allocator) ![]const s.Obje
         const y = rng.float(f32) * 3.0;
 
         const transform = rl.Matrix.translate(x, y, z);
-        try pushObject(mesh, class, color, transform, &list);
+        try pushObject(mesh, class, color, transform, &list, alloc);
     }
 
     // Finally: a big, flat ground plane
@@ -86,6 +127,7 @@ pub fn buildScene(object_count: usize, alloc: std.mem.Allocator) ![]const s.Obje
         rl.Color.beige,
         rl.Matrix.translate(0, -0.1, plane_half_size),
         &list,
+        alloc,
     );
 
     return try list.toOwnedSlice();

@@ -121,7 +121,7 @@ fn drawGUI(
 
 fn draw3D(
     models: []const s.Object,
-    sphere_mesh: rl.Mesh,
+    collision_mesh: rl.Mesh,
     inst_mats: *const [CLASS_COUNT]rl.Material,
     class_tx: *const [CLASS_COUNT][]rl.Matrix,
     class_counter: *[CLASS_COUNT]usize,
@@ -138,7 +138,7 @@ fn draw3D(
         for (0..CLASS_COUNT) |cls| {
             if (class_counter[cls] > 0) {
                 rl.drawMeshInstanced(
-                    sphere_mesh,
+                    collision_mesh,
                     inst_mats[cls],
                     class_tx[cls][0..class_counter[cls]],
                 );
@@ -173,6 +173,7 @@ pub fn main() !void {
     var kdtree = try kd.KDTree.build(alloc, models);
     defer kdtree.deinit(alloc);
     defer for (models) |*m| {
+        m.bvh.deinit();
         rl.unloadModel(m.*.model);
     };
 
@@ -183,10 +184,10 @@ pub fn main() !void {
     const max_points = sensor.res_h * sensor.res_v;
 
     // prepare mesh and materials for visualizing hits with instanced rendering
-    var sphere_mesh = rl.genMeshSphere(0.02, 4, 4);
+    var collision_mesh = rl.genMeshCube(0.02, 0.02, 0.02);
     // loads mesh to GPU
-    rl.uploadMesh(&sphere_mesh, false);
-    defer rl.unloadMesh(sphere_mesh);
+    rl.uploadMesh(&collision_mesh, false);
+    defer rl.unloadMesh(collision_mesh);
     var class_counter: [CLASS_COUNT]usize = .{0} ** CLASS_COUNT;
     const inst_mats, const inst_mat_colors = try initInstanceMats();
     var class_tx = try initClassTxs(alloc, max_points);
@@ -241,7 +242,7 @@ pub fn main() !void {
             rl.beginMode3D(camera);
             defer rl.endMode3D();
 
-            draw3D(models, sphere_mesh, &inst_mats, &class_tx, &class_counter, &sensor, &simulation);
+            draw3D(models, collision_mesh, &inst_mats, &class_tx, &class_counter, &sensor, &simulation);
         }
 
         drawGUI(&simulation, &class_counter, total_hit_count, &inst_mat_colors);

@@ -108,56 +108,65 @@ pub const KDTree = struct {
     // ─────────────────────────────────────────────────────────────
     //  traversal
     // ─────────────────────────────────────────────────────────────
+    fn toLocalRay(ray_ws: rl.Ray, inv: rl.Matrix) rl.Ray {
+        // position: full 4×4 transform (w = 1)
+        const pos = rl.Vector3.transform(ray_ws.position, inv);
+
+        // direction: rotate & scale only (w = 0), ignore translation
+        const dir = rl.Vector3{
+            .x = ray_ws.direction.x * inv.m0 + ray_ws.direction.y * inv.m4 + ray_ws.direction.z * inv.m8,
+            .y = ray_ws.direction.x * inv.m1 + ray_ws.direction.y * inv.m5 + ray_ws.direction.z * inv.m9,
+            .z = ray_ws.direction.x * inv.m2 + ray_ws.direction.y * inv.m6 + ray_ws.direction.z * inv.m10,
+        };
+        return rl.Ray{ .position = pos, .direction = dir };
+    }
+
     pub fn closestHit(
         self: *const KDTree,
-        ray: rl.Ray,
+        ray_ws: rl.Ray,
         models: []const s.Object,
         max_range: f32,
     ) HitResult {
         var best = HitResult{ .distance = max_range };
 
-        var stack: [64]u32 = undefined; // enlarge if you ever need deeper trees
-        var sp: usize = 0;
-
-        // push root
-        stack[sp] = 0;
-        sp += 1;
+        var stack: [64]u32 = undefined;
+        var sp: usize = 1;
+        stack[0] = 0; // root
 
         while (sp > 0) {
-            // explicit pop
             sp -= 1;
-            const node_idx = stack[sp];
-            const node = self.nodes[node_idx];
-
-            if (!rayBoxHit(ray, node.bbox, best.distance))
-                continue; // ray misses this node’s AABB
+            const node = self.nodes[stack[sp]];
+            if (!rayBoxHit(ray_ws, node.bbox, best.distance)) continue;
 
             if (node.count > 0) {
-                // ─── leaf – test contained objects ────────────────
                 for (self.prim_idx[node.first .. node.first + node.count]) |pi| {
                     const obj = models[pi];
 
-                    const bc = rl.getRayCollisionBox(ray, obj.bbox_ws);
+                    // 1. quick reject with world-space AABB
+                    const bc = rl.getRayCollisionBox(ray_ws, obj.bbox_ws);
                     if (!bc.hit or bc.distance >= best.distance) continue;
 
-                    const rc = rl.getRayCollisionMesh(
-                        ray,
-                        obj.model.meshes[0],
-                        obj.model.transform,
-                    );
-                    if (rc.hit and rc.distance < best.distance) {
-                        best = HitResult{
-                            .hit = true,
-                            .distance = rc.distance,
-                            .point = rc.point,
-                            .hit_class = obj.class,
-                        };
+                    // 2. transform ray to the object’s space
+                    const ray_ms = toLocalRay(ray_ws, obj.inv_transform);
+
+                    // 3. precise test inside the mesh BVH
+                    if (obj.bvh.intersect(ray_ms, 0.0, std.math.inf(f32))) |hit| {
+                        // local → world
+                        const hit_ms = ray_ms.position.add(ray_ms.direction.scale(hit.t));
+                        const hit_ws = rl.Vector3.transform(hit_ms, obj.model.transform);
+
+                        const dist_ws = hit_ws.subtract(ray_ws.position).length();
+                        if (dist_ws < best.distance) {
+                            best = .{
+                                .hit = true,
+                                .distance = dist_ws, // world units
+                                .point = hit_ws,
+                                .hit_class = obj.class,
+                            };
+                        }
                     }
                 }
-            } else {
-                // ─── interior – visit children.  We push *right*
-                // first so that the *left* child gets processed next:
-                std.debug.assert(sp + 2 <= stack.len);
+            } else { // push children (right first)
                 stack[sp] = node.right;
                 sp += 1;
                 stack[sp] = node.left;
