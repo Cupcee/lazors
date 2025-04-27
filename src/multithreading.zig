@@ -6,6 +6,7 @@ const s = @import("structs.zig");
 const Acquire = std.builtin.AtomicOrder.acquire;
 const Release = std.builtin.AtomicOrder.release;
 const AcqRel = std.builtin.AtomicOrder.acq_rel;
+pub const CLASS_COUNT = 4;
 
 // ────────────────────────────────────────────────────────────────
 //  DATA TYPES
@@ -28,9 +29,7 @@ pub const RaycastContext = struct {
     points_slice: []s.RayPoint,
 };
 
-// ────────────────────────────────────────────────────────────────
-//  LOW-LEVEL WORK (unchanged from your original worker)
-// ────────────────────────────────────────────────────────────────
+/// Worker function for a thread.
 pub fn raycastWorker(ctx: *const RaycastContext) void {
     const rng = ctx.thread_prng.random();
 
@@ -80,6 +79,103 @@ pub fn raycastWorker(ctx: *const RaycastContext) void {
             }) catch unreachable; // capacity guaranteed by caller
         }
     }
+}
+
+//------------------------------------------------------------------
+// helpers for threaded ray-cast work in simulation
+//------------------------------------------------------------------
+
+/// Slice‐by-slice preparation of the contexts that each worker thread
+/// will receive.  All storage lives *outside* the function so there
+/// are no hidden allocations.
+pub fn prepareRaycastContexts(
+    contexts: []RaycastContext,
+    sensor: *s.Sensor,
+    models: []const s.Object,
+    jitter_scale: f32,
+    thread_prngs: []rand.DefaultPrng,
+    thread_hit_lists: []std.ArrayList(ThreadHit),
+    n_rays: usize,
+) void {
+    const num_threads = contexts.len;
+    const rays_per_thread = n_rays / num_threads;
+    var remaining_rays = n_rays % num_threads;
+    var ray_idx: usize = 0;
+
+    for (contexts, 0..) |*ctx, i| {
+        // clear & reuse the slice that will collect this thread’s hits
+        thread_hit_lists[i].clearRetainingCapacity();
+
+        var chunk = rays_per_thread;
+        if (remaining_rays > 0) {
+            chunk += 1;
+            remaining_rays -= 1;
+        }
+
+        const start = ray_idx;
+        const end = @min(start + chunk, n_rays);
+
+        ctx.* = .{
+            .thread_id = i,
+            .start_index = start,
+            .end_index = end,
+            .sensor = sensor,
+            .models = models,
+            .jitter_scale = jitter_scale,
+            .thread_prng = &thread_prngs[i],
+            .thread_hits = &thread_hit_lists[i],
+            .points_slice = sensor.points[start..end],
+        };
+
+        ray_idx = end;
+    }
+}
+
+/// Spawn workers
+/// Returns count of spawned workers
+fn launchRaycastWorkers(
+    threads: []Thread,
+    contexts: []const RaycastContext,
+) !usize {
+    var spawned: usize = 0;
+
+    for (contexts, 0..) |ctx, i| {
+        if (ctx.start_index == ctx.end_index) continue; // nothing to do
+
+        threads[spawned] = try Thread.spawn(.{}, raycastWorker, .{&contexts[i]});
+        spawned += 1;
+    }
+    return spawned;
+}
+
+fn waitForWorkers(threads: []Thread, spawnedCount: usize) void {
+    for (threads[0..spawnedCount]) |t| t.join();
+}
+
+/// Merge per-thread hit‐lists into the per-class instance matrices and
+/// return the total number of hits.
+pub fn mergeThreadHits(
+    thread_hit_lists: []const std.ArrayList(ThreadHit),
+    class_tx: *[CLASS_COUNT][]rl.Matrix,
+    class_counter: *[CLASS_COUNT]usize,
+) usize {
+    @memset(class_counter, 0);
+
+    var total: usize = 0;
+    for (thread_hit_lists) |list| {
+        total += list.items.len;
+        for (list.items) |hit| {
+            const cls: usize = @intCast(hit.hit_class);
+            if (cls < CLASS_COUNT) {
+                const idx = class_counter[cls];
+                class_tx[cls][idx] = hit.transform;
+                class_counter[cls] += 1;
+            } else {
+                std.log.warn("Hit with invalid class ID {} encountered.", .{cls});
+            }
+        }
+    }
+    return total;
 }
 
 // ────────────────────────────────────────────────────────────────

@@ -10,7 +10,7 @@ const rl = @import("raylib"); // ziraylib package
 const s = @import("structs.zig");
 const mt = @import("multithreading.zig");
 const scene = @import("scene.zig");
-const CLASS_COUNT = 4;
+const CLASS_COUNT = mt.CLASS_COUNT;
 const WINDOW_WIDTH = 1240;
 const WINDOW_HEIGHT = 800;
 const JITTER_SCALE = 0.002;
@@ -143,103 +143,6 @@ fn draw3D(
     }
 }
 
-//------------------------------------------------------------------
-// helpers for threaded ray-cast work in simulation
-//------------------------------------------------------------------
-
-/// Slice‐by-slice preparation of the contexts that each worker thread
-/// will receive.  All storage lives *outside* the function so there
-/// are no hidden allocations.
-fn prepareRaycastContexts(
-    contexts: []mt.RaycastContext,
-    sensor: *s.Sensor,
-    models: []const s.Object,
-    jitter_scale: f32,
-    thread_prngs: []rand.DefaultPrng,
-    thread_hit_lists: []std.ArrayList(mt.ThreadHit),
-    n_rays: usize,
-) void {
-    const num_threads = contexts.len;
-    const rays_per_thread = n_rays / num_threads;
-    var remaining_rays = n_rays % num_threads;
-    var ray_idx: usize = 0;
-
-    for (contexts, 0..) |*ctx, i| {
-        // clear & reuse the slice that will collect this thread’s hits
-        thread_hit_lists[i].clearRetainingCapacity();
-
-        var chunk = rays_per_thread;
-        if (remaining_rays > 0) {
-            chunk += 1;
-            remaining_rays -= 1;
-        }
-
-        const start = ray_idx;
-        const end = @min(start + chunk, n_rays);
-
-        ctx.* = .{
-            .thread_id = i,
-            .start_index = start,
-            .end_index = end,
-            .sensor = sensor,
-            .models = models,
-            .jitter_scale = jitter_scale,
-            .thread_prng = &thread_prngs[i],
-            .thread_hits = &thread_hit_lists[i],
-            .points_slice = sensor.points[start..end],
-        };
-
-        ray_idx = end;
-    }
-}
-
-/// Spawn workers
-/// Returns count of spawned workers
-fn launchRaycastWorkers(
-    threads: []Thread,
-    contexts: []const mt.RaycastContext,
-) !usize {
-    var spawned: usize = 0;
-
-    for (contexts, 0..) |ctx, i| {
-        if (ctx.start_index == ctx.end_index) continue; // nothing to do
-
-        threads[spawned] = try Thread.spawn(.{}, mt.raycastWorker, .{&contexts[i]});
-        spawned += 1;
-    }
-    return spawned;
-}
-
-fn waitForWorkers(threads: []Thread, spawnedCount: usize) void {
-    for (threads[0..spawnedCount]) |t| t.join();
-}
-
-/// Merge per-thread hit‐lists into the per-class instance matrices and
-/// return the total number of hits.
-fn mergeThreadHits(
-    thread_hit_lists: []const std.ArrayList(mt.ThreadHit),
-    class_tx: *[CLASS_COUNT][]rl.Matrix,
-    class_counter: *[CLASS_COUNT]usize,
-) usize {
-    @memset(class_counter, 0);
-
-    var total: usize = 0;
-    for (thread_hit_lists) |list| {
-        total += list.items.len;
-        for (list.items) |hit| {
-            const cls: usize = @intCast(hit.hit_class);
-            if (cls < CLASS_COUNT) {
-                const idx = class_counter[cls];
-                class_tx[cls][idx] = hit.transform;
-                class_counter[cls] += 1;
-            } else {
-                std.log.warn("Hit with invalid class ID {} encountered.", .{cls});
-            }
-        }
-    }
-    return total;
-}
-
 pub fn main() !void {
     const alloc, const is_debug = alloc: {
         break :alloc switch (builtin.mode) {
@@ -295,7 +198,7 @@ pub fn main() !void {
         sensorDt(&sensor, dt, &simulation.debug);
 
         // 1. Build the contexts for this frame’s ray-casts
-        prepareRaycastContexts(
+        mt.prepareRaycastContexts(
             threads.contexts,
             &sensor,
             models,
@@ -311,7 +214,7 @@ pub fn main() !void {
         try threads.wait(); // blocks until all rays done
 
         // 3. Merge results
-        const total_hit_count = mergeThreadHits(
+        const total_hit_count = mt.mergeThreadHits(
             threads.hits,
             &class_tx,
             &class_counter,
