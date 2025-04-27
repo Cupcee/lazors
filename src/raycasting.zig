@@ -43,7 +43,6 @@ pub fn raycastWorker(ctx: *const RaycastContext) void {
 
         const dir_local = ctx.sensor.dirs[global_i];
         const dir_ws = rl.Vector3.transform(dir_local, ctx.sensor.local_to_world);
-        // Small jitter to break up aliasing
         const dir = rl.Vector3.normalize(.{
             .x = dir_ws.x + (rng.float(f32) - 0.5) * ctx.jitter_scale,
             .y = dir_ws.y + (rng.float(f32) - 0.5) * ctx.jitter_scale,
@@ -51,24 +50,6 @@ pub fn raycastWorker(ctx: *const RaycastContext) void {
         });
 
         const ray = rl.Ray{ .position = ctx.sensor.pos, .direction = dir };
-
-        // Naive version of looking for closest hits
-        // var closest: f32 = ctx.sensor.max_range;
-        // var contact: rl.Vector3 = undefined;
-        // var hit: bool = false;
-        // var hit_class: u32 = 0;
-        // for (ctx.models) |model| {
-        //     const bc = rl.getRayCollisionBox(ray, model.bbox_ws);
-        //     if (!bc.hit or bc.distance >= closest) continue;
-        //
-        //     const rc = rl.getRayCollisionMesh(ray, model.model.meshes[0], model.model.transform);
-        //     if (rc.hit and rc.distance < closest) {
-        //         closest = rc.distance;
-        //         contact = rc.point;
-        //         hit = true;
-        //         hit_class = model.class;
-        //     }
-        // }
 
         const nearest = ctx.kdtree.closestHit(ray, ctx.models, ctx.sensor.max_range);
         const contact = if (nearest.hit) nearest.point else rl.Vector3.zero();
@@ -81,10 +62,6 @@ pub fn raycastWorker(ctx: *const RaycastContext) void {
 
         if (nearest.hit) {
             const transform = rl.Matrix.translate(contact.x, contact.y, contact.z);
-            // ctx.thread_hits.appendAssumeCapacity(.{
-            //     .hit_class = hit_class,
-            //     .transform = transform,
-            // });
             hits.items[hit_ix] = .{ .hit_class = nearest.hit_class, .transform = transform };
             hit_ix += 1;
         }
