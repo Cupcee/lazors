@@ -34,6 +34,8 @@ pub const RaycastContext = struct {
 pub fn raycastWorker(ctx: *const RaycastContext) void {
     const rng = ctx.thread_prng.random();
 
+    var hits = &ctx.thread_hits.*; // no extra indirections
+    var hit_ix = hits.items.len; // we guaranteed capacity
     for (ctx.start_index..ctx.end_index) |global_i| {
         const local_i = global_i - ctx.start_index;
 
@@ -74,12 +76,15 @@ pub fn raycastWorker(ctx: *const RaycastContext) void {
 
         if (hit) {
             const transform = rl.Matrix.translate(contact.x, contact.y, contact.z);
-            ctx.thread_hits.append(.{
-                .hit_class = hit_class,
-                .transform = transform,
-            }) catch unreachable; // capacity guaranteed by caller
+            // ctx.thread_hits.appendAssumeCapacity(.{
+            //     .hit_class = hit_class,
+            //     .transform = transform,
+            // });
+            hits.items[hit_ix] = .{ .hit_class = hit_class, .transform = transform };
+            hit_ix += 1;
         }
     }
+    hits.items.len = hit_ix;
 }
 
 /// Slice‐by-slice preparation of the contexts that each worker thread
@@ -175,8 +180,8 @@ pub const ThreadResources = struct {
         const cap = max_points / num_threads + 32;
         const lists = try alloc.alloc(std.ArrayList(ThreadHit), num_threads);
         for (lists) |*l| {
-            l.* = std.ArrayList(ThreadHit).init(alloc);
-            try l.ensureTotalCapacity(cap);
+            l.* = try std.ArrayList(ThreadHit).initCapacity(alloc, cap);
+            // try l.ensureTotalCapacity(cap);
         }
 
         // -------- 2. per-thread PRNGs  --------------
