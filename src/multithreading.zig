@@ -1,53 +1,49 @@
 const rl = @import("raylib");
 const std = @import("std");
+const builtin = @import("builtin");
 const rand = std.Random;
 const s = @import("structs.zig");
-const Thread = std.Thread;
+const Acquire = std.builtin.AtomicOrder.acquire;
+const Release = std.builtin.AtomicOrder.release;
+const AcqRel = std.builtin.AtomicOrder.acq_rel;
 
-//------------------------------------------------------------------
-// MULTITHREADING STRUCTURES
-//------------------------------------------------------------------
+// ────────────────────────────────────────────────────────────────
+//  DATA TYPES
+// ────────────────────────────────────────────────────────────────
 
-/// Represents a single hit detected by a worker thread.
 pub const ThreadHit = struct {
     hit_class: u32,
     transform: rl.Matrix,
 };
 
-/// Data passed to each worker thread.
 pub const RaycastContext = struct {
     thread_id: usize,
-    start_index: usize, // First ray index this thread handles
-    end_index: usize, // Last ray index + 1 this thread handles
-    sensor: *const s.Sensor, // Read-only access needed
-    models: []const s.Object, // Read-only access needed
+    start_index: usize,
+    end_index: usize,
+    sensor: *const s.Sensor,
+    models: []const s.Object,
     jitter_scale: f32,
-    thread_prng: *rand.DefaultPrng, // Each thread gets its own PRNG state
-
-    // Output - each thread appends its hits here
+    thread_prng: *rand.DefaultPrng,
     thread_hits: *std.ArrayList(ThreadHit),
-
-    // Direct write access to the shared points buffer (safe due to non-overlapping ranges)
     points_slice: []s.RayPoint,
 };
 
-/// The function executed by each worker thread.
+// ────────────────────────────────────────────────────────────────
+//  LOW-LEVEL WORK (unchanged from your original worker)
+// ────────────────────────────────────────────────────────────────
 pub fn raycastWorker(ctx: *const RaycastContext) void {
-    const rng = ctx.thread_prng.random(); // Use thread-local RNG
+    const rng = ctx.thread_prng.random();
 
-    // Process the assigned range of rays
-    for (ctx.start_index..ctx.end_index) |i| {
-        // Index relative to the thread's points_slice
-        const slice_idx = i - ctx.start_index;
+    for (ctx.start_index..ctx.end_index) |global_i| {
+        const local_i = global_i - ctx.start_index;
 
-        // apply a tiny random offset to break up aliasing
-        const dir_local = ctx.sensor.dirs[i];
-        // Manually apply rotation part of local_to_world (translation comes from sensor.pos)
+        const dir_local = ctx.sensor.dirs[global_i];
         const dir_ws = rl.Vector3.transform(dir_local, ctx.sensor.local_to_world);
+        // Small jitter to break up aliasing
         const dir = rl.Vector3.normalize(.{
             .x = dir_ws.x + (rng.float(f32) - 0.5) * ctx.jitter_scale,
             .y = dir_ws.y + (rng.float(f32) - 0.5) * ctx.jitter_scale,
-            .z = dir_ws.z, // Assuming jitter only applied in x/y based on original code
+            .z = dir_ws.z,
         });
 
         const ray = rl.Ray{ .position = ctx.sensor.pos, .direction = dir };
@@ -55,17 +51,13 @@ pub fn raycastWorker(ctx: *const RaycastContext) void {
         var closest: f32 = ctx.sensor.max_range;
         var contact: rl.Vector3 = undefined;
         var hit: bool = false;
-        var hit_class: u32 = 0; // Default to 0 or some 'no hit' class if needed
+        var hit_class: u32 = 0;
 
         for (ctx.models) |model| {
-            // Bounding box check (early out)
             const bc = rl.getRayCollisionBox(ray, model.bbox_ws);
-            if (!bc.hit) continue;
-            if (bc.distance >= closest or bc.distance > ctx.sensor.max_range) continue;
+            if (!bc.hit or bc.distance >= closest) continue;
 
-            // Precise mesh collision check
             const rc = rl.getRayCollisionMesh(ray, model.model.meshes[0], model.model.transform);
-
             if (rc.hit and rc.distance < closest) {
                 closest = rc.distance;
                 contact = rc.point;
@@ -74,77 +66,150 @@ pub fn raycastWorker(ctx: *const RaycastContext) void {
             }
         }
 
-        // Write result to the shared points buffer (safe - distinct index `i`)
-        ctx.points_slice[slice_idx] = .{ .xyz = contact, .hit = hit, .hitClass = hit_class };
+        ctx.points_slice[local_i] = .{
+            .xyz = contact,
+            .hit = hit,
+            .hitClass = hit_class,
+        };
 
-        // If hit, record it for later merging
         if (hit) {
             const transform = rl.Matrix.translate(contact.x, contact.y, contact.z);
-            ctx.thread_hits.append(.{ .hit_class = hit_class, .transform = transform }) catch |err| {
-                std.log.err("Failed to append hit in thread {}: {s}\n", .{ ctx.thread_id, @errorName(err) });
-                return;
-            };
+            ctx.thread_hits.append(.{
+                .hit_class = hit_class,
+                .transform = transform,
+            }) catch unreachable; // capacity guaranteed by caller
         }
     }
 }
 
-/// Holds everything needed to kick off our ray‐cast worker threads.
+// ────────────────────────────────────────────────────────────────
+//  THREAD-POOL
+// ────────────────────────────────────────────────────────────────
+const State = enum(u8) { idle, working, shutdown };
+
+/// All the memory we keep for the lifetime of the program
 pub const ThreadResources = struct {
-    threads: []Thread,
+    // user-visible slices (unchanged)
     contexts: []RaycastContext,
-    hitLists: []std.ArrayList(ThreadHit),
+    hits: []std.ArrayList(ThreadHit),
     prngs: []rand.DefaultPrng,
 
-    /// Allocate all thread resources.
+    // private pool machinery
+    threads: []Thread,
+    state: std.atomic.Value(State),
+    nextJob: std.atomic.Value(usize),
+    jobCount: std.atomic.Value(usize),
+    doneCount: std.atomic.Value(usize),
+
+    wg: Thread.WaitGroup,
+    workersStarted: bool = false,
+
+    // ───── initialise once ─────
     pub fn init(
         alloc: std.mem.Allocator,
         numThreads: usize,
         maxPoints: usize,
     ) !ThreadResources {
-        // 1) allocate the arrays themselves
-        const threads = try alloc.alloc(Thread, numThreads);
-        const contexts = try alloc.alloc(RaycastContext, numThreads);
-        const hitLists = try alloc.alloc(std.ArrayList(ThreadHit), numThreads);
-        const prngs = try alloc.alloc(rand.DefaultPrng, numThreads);
+        // allocate storage ----------------------------------------------------
+        const tr = ThreadResources{
+            .threads = try alloc.alloc(Thread, numThreads),
+            .contexts = try alloc.alloc(RaycastContext, numThreads),
+            .hits = try alloc.alloc(std.ArrayList(ThreadHit), numThreads),
+            .prngs = try alloc.alloc(rand.DefaultPrng, numThreads),
 
-        // 2) init each hitList with enough capacity
-        const baseCap = maxPoints / numThreads + 10;
-        for (hitLists) |*list| {
-            list.* = std.ArrayList(ThreadHit).init(alloc);
-            try list.ensureTotalCapacity(baseCap);
-        }
-
-        // 3) seed each PRNG
-        for (prngs) |*r| {
-            r.* = rand.DefaultPrng.init(@intCast(std.time.nanoTimestamp()));
-        }
-
-        return ThreadResources{
-            .threads = threads,
-            .contexts = contexts,
-            .hitLists = hitLists,
-            .prngs = prngs,
+            .state = std.atomic.Value(State).init(.idle),
+            .nextJob = std.atomic.Value(usize).init(0),
+            .jobCount = std.atomic.Value(usize).init(0),
+            .doneCount = std.atomic.Value(usize).init(0),
+            .wg = .{},
         };
+
+        // per-thread helpers ---------------------------------------------------
+        const cap = maxPoints / numThreads + 32;
+        for (tr.hits) |*l| {
+            l.* = std.ArrayList(ThreadHit).init(alloc);
+            try l.ensureTotalCapacity(cap);
+        }
+        for (tr.prngs) |*p| {
+            p.* = rand.DefaultPrng.init(@intCast(std.time.nanoTimestamp()));
+        }
+        return tr;
     }
 
-    /// Free everything this struct allocated.
-    pub fn deinit(self: *ThreadResources, alloc: std.mem.Allocator) void {
-        // deinit each hitList
-        for (self.hitLists) |*list| {
-            list.*.deinit();
-        }
+    pub fn startWorkers(self: *ThreadResources) !void {
+        if (self.workersStarted) return error.AlreadyStarted;
+        for (self.threads) |*t| t.* = try Thread.spawn(.{}, workerLoop, .{self});
+        self.workersStarted = true;
+    }
 
-        alloc.free(self.hitLists);
+    // ───── one call per frame ─────
+    pub fn dispatch(self: *ThreadResources, jobCount: usize) void {
+        self.wg.reset();
+        if (jobCount == 0) return;
+        self.wg.startMany(jobCount);
+        self.nextJob.store(0, Release);
+        self.state.store(.working, Release);
+    }
+
+    /// Busy-wait until every worker has called finish()
+    pub fn wait(self: *ThreadResources) !void {
+        self.wg.wait();
+        self.state.store(.idle, Release);
+    }
+
+    // ───── shutdown at exit ─────
+    pub fn deinit(self: *ThreadResources, alloc: std.mem.Allocator) void {
+        // signal workers to exit
+        self.state.store(.shutdown, Release);
+        for (self.threads) |t| t.join();
+
+        // free memory
+        for (self.hits) |*l| l.*.deinit();
+        alloc.free(self.hits);
         alloc.free(self.prngs);
         alloc.free(self.contexts);
         alloc.free(self.threads);
     }
 };
 
+/// Per-thread infinite loop
+fn workerLoop(pool: *ThreadResources) void {
+    while (true) {
+        // park until somebody sets state=working
+        while (pool.state.load(Acquire) == .idle) {
+            Thread.yield() catch {};
+        }
+
+        if (pool.state.load(Acquire) == .shutdown) return;
+
+        while (true) {
+            const idx = pool.nextJob.fetchAdd(1, AcqRel);
+            if (idx >= pool.contexts.len) break;
+
+            const ctx = &pool.contexts[idx];
+            if (ctx.start_index != ctx.end_index) {
+                raycastWorker(ctx); // do real work
+            }
+            pool.wg.finish();
+        }
+        std.Thread.yield() catch {};
+    }
+}
+
+/// Utility: return how many contexts have real work this frame
+pub fn countActive(contexts: []const RaycastContext) usize {
+    var n: usize = 0;
+    for (contexts) |c| {
+        if (c.start_index != c.end_index) n += 1;
+    }
+    return n;
+}
+
+/// Handier alias so the caller’s code reads the same as before
+pub const Thread = std.Thread;
+pub const ThreadSpawn = std.Thread.spawn;
+
+/// Expose same helper as before
 pub fn getNumThreads() usize {
-    const numThreads = blk: {
-        const cpu_count = Thread.getCpuCount() catch 1;
-        break :blk @max(1, cpu_count);
-    };
-    return numThreads;
+    return @max(1, std.Thread.getCpuCount() catch 1);
 }

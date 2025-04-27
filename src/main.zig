@@ -13,7 +13,7 @@ const scene = @import("scene.zig");
 const CLASS_COUNT = 4;
 const WINDOW_WIDTH = 1240;
 const WINDOW_HEIGHT = 800;
-const JITTER_SCALE = 0.005;
+const JITTER_SCALE = 0.002;
 
 var debugAllocator: std.heap.DebugAllocator(.{}) = .init;
 
@@ -285,6 +285,7 @@ pub fn main() !void {
     const numThreads = mt.getNumThreads();
     std.log.info("Using {} threads for raycasting.", .{numThreads});
     var threads = try mt.ThreadResources.init(alloc, numThreads, maxPoints);
+    try threads.startWorkers();
     defer threads.deinit(alloc);
 
     while (!rl.windowShouldClose()) {
@@ -300,17 +301,18 @@ pub fn main() !void {
             models,
             JITTER_SCALE,
             threads.prngs,
-            threads.hitLists,
+            threads.hits,
             maxPoints,
         );
 
-        // 2. Fire off worker threads
-        const spawnedCount = try launchRaycastWorkers(threads.threads, threads.contexts);
-        waitForWorkers(threads.threads, spawnedCount);
+        // 2. let the pool run them
+        const nJobs = threads.contexts.len;
+        threads.dispatch(nJobs);
+        try threads.wait(); // blocks until all rays done
 
         // 3. Merge results
         const totalHitCount = mergeThreadHits(
-            threads.hitLists,
+            threads.hits,
             &classTx,
             &classCounter,
         );
