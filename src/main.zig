@@ -15,7 +15,7 @@ const WINDOW_WIDTH = 1240;
 const WINDOW_HEIGHT = 800;
 const JITTER_SCALE = 0.002;
 
-var debugAllocator: std.heap.DebugAllocator(.{}) = .init;
+var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
 
 fn sensorDt(sensor: *s.Sensor, dt: f32, debug: *bool) void {
     if (rl.isKeyDown(rl.KeyboardKey.right)) sensor.pos.x -= sensor.velocity * dt;
@@ -243,12 +243,12 @@ fn mergeThreadHits(
 pub fn main() !void {
     const alloc, const is_debug = alloc: {
         break :alloc switch (builtin.mode) {
-            .Debug, .ReleaseSafe => .{ debugAllocator.allocator(), true },
+            .Debug, .ReleaseSafe => .{ debug_allocator.allocator(), true },
             .ReleaseFast, .ReleaseSmall => .{ std.heap.smp_allocator, false },
         };
     };
     defer if (is_debug) {
-        _ = debugAllocator.deinit();
+        _ = debug_allocator.deinit();
     };
 
     rl.initWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "lazors");
