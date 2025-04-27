@@ -6,6 +6,7 @@ const std = @import("std");
 const Thread = std.Thread;
 const builtin = @import("builtin");
 const rand = std.Random;
+const kd = @import("kdtree.zig");
 const rl = @import("raylib"); // ziraylib package
 const s = @import("structs.zig");
 const rc = @import("raycasting.zig");
@@ -159,7 +160,7 @@ pub fn main() !void {
 
     rl.initWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "lazors");
     rl.disableCursor();
-    rl.setTargetFPS(24);
+    rl.setTargetFPS(60);
 
     // simulation init
     var simulation = s.Simulation{};
@@ -169,7 +170,11 @@ pub fn main() !void {
 
     // 3D scene init
     const models = try scene.buildScene(50, alloc);
-    defer for (models) |*m| rl.unloadModel(m.*.model);
+    var kdtree = try kd.KDTree.build(alloc, models);
+    defer kdtree.deinit(alloc);
+    defer for (models) |*m| {
+        rl.unloadModel(m.*.model);
+    };
 
     // sensor state init
     var sensor = try s.Sensor.init(alloc, 800, 192, 360, 70);
@@ -208,6 +213,7 @@ pub fn main() !void {
             thread_ctx,
             &sensor,
             models,
+            &kdtree,
             JITTER_SCALE,
             thread_resources.prngs,
             thread_resources.hits,

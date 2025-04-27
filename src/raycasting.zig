@@ -3,6 +3,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const rand = std.Random;
 const s = @import("structs.zig");
+const kd = @import("kdtree.zig");
 const Acquire = std.builtin.AtomicOrder.acquire;
 const Release = std.builtin.AtomicOrder.release;
 const AcqRel = std.builtin.AtomicOrder.acq_rel;
@@ -23,6 +24,7 @@ pub const RaycastContext = struct {
     end_index: usize,
     sensor: *const s.Sensor,
     models: []const s.Object,
+    kdtree: *const kd.KDTree,
     jitter_scale: f32,
     thread_prng: *rand.DefaultPrng,
     thread_hits: *std.ArrayList(ThreadHit),
@@ -50,37 +52,40 @@ pub fn raycastWorker(ctx: *const RaycastContext) void {
 
         const ray = rl.Ray{ .position = ctx.sensor.pos, .direction = dir };
 
-        var closest: f32 = ctx.sensor.max_range;
-        var contact: rl.Vector3 = undefined;
-        var hit: bool = false;
-        var hit_class: u32 = 0;
+        // Naive version of looking for closest hits
+        // var closest: f32 = ctx.sensor.max_range;
+        // var contact: rl.Vector3 = undefined;
+        // var hit: bool = false;
+        // var hit_class: u32 = 0;
+        // for (ctx.models) |model| {
+        //     const bc = rl.getRayCollisionBox(ray, model.bbox_ws);
+        //     if (!bc.hit or bc.distance >= closest) continue;
+        //
+        //     const rc = rl.getRayCollisionMesh(ray, model.model.meshes[0], model.model.transform);
+        //     if (rc.hit and rc.distance < closest) {
+        //         closest = rc.distance;
+        //         contact = rc.point;
+        //         hit = true;
+        //         hit_class = model.class;
+        //     }
+        // }
 
-        for (ctx.models) |model| {
-            const bc = rl.getRayCollisionBox(ray, model.bbox_ws);
-            if (!bc.hit or bc.distance >= closest) continue;
-
-            const rc = rl.getRayCollisionMesh(ray, model.model.meshes[0], model.model.transform);
-            if (rc.hit and rc.distance < closest) {
-                closest = rc.distance;
-                contact = rc.point;
-                hit = true;
-                hit_class = model.class;
-            }
-        }
+        const nearest = ctx.kdtree.closestHit(ray, ctx.models, ctx.sensor.max_range);
+        const contact = if (nearest.hit) nearest.point else rl.Vector3.zero();
 
         ctx.points_slice[local_i] = .{
             .xyz = contact,
-            .hit = hit,
-            .hit_class = hit_class,
+            .hit = nearest.hit,
+            .hit_class = nearest.hit_class,
         };
 
-        if (hit) {
+        if (nearest.hit) {
             const transform = rl.Matrix.translate(contact.x, contact.y, contact.z);
             // ctx.thread_hits.appendAssumeCapacity(.{
             //     .hit_class = hit_class,
             //     .transform = transform,
             // });
-            hits.items[hit_ix] = .{ .hit_class = hit_class, .transform = transform };
+            hits.items[hit_ix] = .{ .hit_class = nearest.hit_class, .transform = transform };
             hit_ix += 1;
         }
     }
@@ -94,6 +99,7 @@ pub fn prepareRaycastContexts(
     contexts: []RaycastContext,
     sensor: *s.Sensor,
     models: []const s.Object,
+    kdtree: *const kd.KDTree,
     jitter_scale: f32,
     thread_prngs: []rand.DefaultPrng,
     thread_hit_lists: []std.ArrayList(ThreadHit),
@@ -123,6 +129,7 @@ pub fn prepareRaycastContexts(
             .end_index = end,
             .sensor = sensor,
             .models = models,
+            .kdtree = kdtree,
             .jitter_scale = jitter_scale,
             .thread_prng = &thread_prngs[i],
             .thread_hits = &thread_hit_lists[i],

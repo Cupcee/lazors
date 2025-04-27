@@ -18,14 +18,19 @@ fn pushObject(
     mdl.transform = transform;
     const local_bb = rl.getMeshBoundingBox(mesh);
     const world_bb = math.transformBBox(local_bb, transform);
-    list.appendAssumeCapacity(
-        s.Object{ .model = mdl, .class = class, .color = color, .bbox_ws = world_bb },
-    );
+    // const inv_model = rl.MatrixIdentity(); // if you ever animate, handle xform
+    const obj = s.Object{
+        .model = mdl,
+        .class = class,
+        .color = color,
+        .bbox_ws = world_bb,
+    };
+    list.appendAssumeCapacity(obj);
 }
 
-pub fn buildScene(object_count: usize, gpa: std.mem.Allocator) ![]const s.Object {
+pub fn buildScene(object_count: usize, alloc: std.mem.Allocator) ![]const s.Object {
     // Pre-allocate for all dynamic objects + 1 ground plane
-    var list = try std.ArrayList(s.Object).initCapacity(gpa, object_count + 1);
+    var list = try std.ArrayList(s.Object).initCapacity(alloc, object_count + 1);
     errdefer {
         // On error or exit, unload all models
         for (list.items) |m| rl.unloadModel(m.model);
