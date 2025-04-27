@@ -7,7 +7,7 @@ const std = @import("std");
 pub const RayPoint = struct {
     xyz: rl.Vector3 = .{ .x = 0, .y = 0, .z = 0 },
     hit: bool = false,
-    hitClass: u32 = 0,
+    hit_class: u32 = 0,
 };
 
 pub const Object = struct {

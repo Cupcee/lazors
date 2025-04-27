@@ -69,7 +69,7 @@ pub fn raycastWorker(ctx: *const RaycastContext) void {
         ctx.points_slice[local_i] = .{
             .xyz = contact,
             .hit = hit,
-            .hitClass = hit_class,
+            .hit_class = hit_class,
         };
 
         if (hit) {
@@ -97,35 +97,35 @@ pub const ThreadResources = struct {
     // private pool machinery
     threads: []Thread,
     state: std.atomic.Value(State),
-    nextJob: std.atomic.Value(usize),
-    jobCount: std.atomic.Value(usize),
-    doneCount: std.atomic.Value(usize),
+    next_job: std.atomic.Value(usize),
+    job_count: std.atomic.Value(usize),
+    done_count: std.atomic.Value(usize),
 
     wg: Thread.WaitGroup,
-    workersStarted: bool = false,
+    workers_started: bool = false,
 
     // ───── initialise once ─────
     pub fn init(
         alloc: std.mem.Allocator,
-        numThreads: usize,
-        maxPoints: usize,
+        num_threads: usize,
+        max_points: usize,
     ) !ThreadResources {
         // allocate storage ----------------------------------------------------
         const tr = ThreadResources{
-            .threads = try alloc.alloc(Thread, numThreads),
-            .contexts = try alloc.alloc(RaycastContext, numThreads),
-            .hits = try alloc.alloc(std.ArrayList(ThreadHit), numThreads),
-            .prngs = try alloc.alloc(rand.DefaultPrng, numThreads),
+            .threads = try alloc.alloc(Thread, num_threads),
+            .contexts = try alloc.alloc(RaycastContext, num_threads),
+            .hits = try alloc.alloc(std.ArrayList(ThreadHit), num_threads),
+            .prngs = try alloc.alloc(rand.DefaultPrng, num_threads),
 
             .state = std.atomic.Value(State).init(.idle),
-            .nextJob = std.atomic.Value(usize).init(0),
-            .jobCount = std.atomic.Value(usize).init(0),
-            .doneCount = std.atomic.Value(usize).init(0),
+            .next_job = std.atomic.Value(usize).init(0),
+            .job_count = std.atomic.Value(usize).init(0),
+            .done_count = std.atomic.Value(usize).init(0),
             .wg = .{},
         };
 
         // per-thread helpers ---------------------------------------------------
-        const cap = maxPoints / numThreads + 32;
+        const cap = max_points / num_threads + 32;
         for (tr.hits) |*l| {
             l.* = std.ArrayList(ThreadHit).init(alloc);
             try l.ensureTotalCapacity(cap);
@@ -137,17 +137,17 @@ pub const ThreadResources = struct {
     }
 
     pub fn startWorkers(self: *ThreadResources) !void {
-        if (self.workersStarted) return error.AlreadyStarted;
+        if (self.workers_started) return error.AlreadyStarted;
         for (self.threads) |*t| t.* = try Thread.spawn(.{}, workerLoop, .{self});
-        self.workersStarted = true;
+        self.workers_started = true;
     }
 
     // ───── one call per frame ─────
-    pub fn dispatch(self: *ThreadResources, jobCount: usize) void {
+    pub fn dispatch(self: *ThreadResources, job_count: usize) void {
         self.wg.reset();
-        if (jobCount == 0) return;
-        self.wg.startMany(jobCount);
-        self.nextJob.store(0, Release);
+        if (job_count == 0) return;
+        self.wg.startMany(job_count);
+        self.next_job.store(0, Release);
         self.state.store(.working, Release);
     }
 
@@ -183,7 +183,7 @@ fn workerLoop(pool: *ThreadResources) void {
         if (pool.state.load(Acquire) == .shutdown) return;
 
         while (true) {
-            const idx = pool.nextJob.fetchAdd(1, AcqRel);
+            const idx = pool.next_job.fetchAdd(1, AcqRel);
             if (idx >= pool.contexts.len) break;
 
             const ctx = &pool.contexts[idx];

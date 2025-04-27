@@ -41,28 +41,28 @@ fn sensorDt(sensor: *s.Sensor, dt: f32, debug: *bool) void {
 }
 
 fn initInstanceMats() !struct { [CLASS_COUNT]rl.Material, [CLASS_COUNT]rl.Color } {
-    const vsPath = "resources/shaders/glsl330/lighting_instancing_unlit.vs";
-    const fsPath = "resources/shaders/glsl330/lighting_unlit.fs";
-    const instShader = try rl.loadShader(vsPath, fsPath);
-    instShader.locs[@intFromEnum(rl.ShaderLocationIndex.matrix_model)] =
-        rl.getShaderLocation(instShader, "instanceTransform");
+    const vs_path = "resources/shaders/glsl330/lighting_instancing_unlit.vs";
+    const fs_path = "resources/shaders/glsl330/lighting_unlit.fs";
+    const inst_shader = try rl.loadShader(vs_path, fs_path);
+    inst_shader.locs[@intFromEnum(rl.ShaderLocationIndex.matrix_model)] =
+        rl.getShaderLocation(inst_shader, "instanceTransform");
 
-    const instMatColors: [CLASS_COUNT]rl.Color = .{ rl.Color.black, rl.Color.red, rl.Color.green, rl.Color.yellow };
-    var instMats: [CLASS_COUNT]rl.Material = undefined;
-    for (&instMats, 0..) |*m, i| {
+    const inst_mat_colors: [CLASS_COUNT]rl.Color = .{ rl.Color.black, rl.Color.red, rl.Color.green, rl.Color.yellow };
+    var inst_mats: [CLASS_COUNT]rl.Material = undefined;
+    for (&inst_mats, 0..) |*m, i| {
         m.* = try rl.loadMaterialDefault();
-        m.*.shader = instShader;
-        m.*.maps[@intFromEnum(rl.MATERIAL_MAP_DIFFUSE)].color = instMatColors[i];
+        m.*.shader = inst_shader;
+        m.*.maps[@intFromEnum(rl.MATERIAL_MAP_DIFFUSE)].color = inst_mat_colors[i];
     }
-    return .{ instMats, instMatColors };
+    return .{ inst_mats, inst_mat_colors };
 }
 
 fn initClassTxs(alloc: std.mem.Allocator, max_points: usize) ![CLASS_COUNT][]rl.Matrix {
-    var classTxs: [CLASS_COUNT][]rl.Matrix = undefined;
-    for (&classTxs) |*slot| {
+    var class_txs: [CLASS_COUNT][]rl.Matrix = undefined;
+    for (&class_txs) |*slot| {
         slot.* = try alloc.alloc(rl.Matrix, max_points);
     }
-    return classTxs;
+    return class_txs;
 }
 
 fn initCamera() struct { rl.Camera, rl.CameraMode } {
@@ -73,15 +73,15 @@ fn initCamera() struct { rl.Camera, rl.CameraMode } {
         .fovy = 60,
         .projection = rl.CameraProjection.perspective,
     };
-    const cameraMode = rl.CameraMode.free;
-    return .{ camera, cameraMode };
+    const camera_mode = rl.CameraMode.free;
+    return .{ camera, camera_mode };
 }
 
 fn drawGUI(
     simulation: *s.Simulation,
-    classCounter: *[CLASS_COUNT]usize,
-    totalHitCount: usize,
-    instMatColors: *const [CLASS_COUNT]rl.Color,
+    class_counter: *[CLASS_COUNT]usize,
+    total_hit_count: usize,
+    inst_mat_colors: *const [CLASS_COUNT]rl.Color,
 ) void {
     rl.drawFPS(10, 10);
     rl.drawText(
@@ -93,13 +93,13 @@ fn drawGUI(
     );
     if (simulation.debug) {
         rl.drawText(
-            rl.textFormat("Total hitCount: %04i", .{totalHitCount}),
+            rl.textFormat("Total hitCount: %04i", .{total_hit_count}),
             10,
             50,
             20,
             rl.Color.dark_gray,
         );
-        for (classCounter, 0..) |count, index| {
+        for (class_counter, 0..) |count, index| {
             const _c: i32 = @intCast(count);
             const _i: i32 = @intCast(index);
             rl.drawText(
@@ -107,7 +107,7 @@ fn drawGUI(
                 10,
                 70 + (_i * 20),
                 20,
-                instMatColors[index],
+                inst_mat_colors[index],
             );
         }
     } else {
@@ -117,10 +117,10 @@ fn drawGUI(
 
 fn draw3D(
     models: []const s.Object,
-    sphereMesh: rl.Mesh,
-    instMats: *const [CLASS_COUNT]rl.Material,
-    classTx: *const [CLASS_COUNT][]rl.Matrix,
-    classCounter: *[CLASS_COUNT]usize,
+    sphere_mesh: rl.Mesh,
+    inst_mats: *const [CLASS_COUNT]rl.Material,
+    class_tx: *const [CLASS_COUNT][]rl.Matrix,
+    class_counter: *[CLASS_COUNT]usize,
     sensor: *s.Sensor,
     simulation: *s.Simulation,
 ) void {
@@ -132,11 +132,11 @@ fn draw3D(
 
     if (simulation.debug) {
         for (0..CLASS_COUNT) |cls| {
-            if (classCounter[cls] > 0) {
+            if (class_counter[cls] > 0) {
                 rl.drawMeshInstanced(
-                    sphereMesh,
-                    instMats[cls],
-                    classTx[cls][0..classCounter[cls]],
+                    sphere_mesh,
+                    inst_mats[cls],
+                    class_tx[cls][0..class_counter[cls]],
                 );
             }
         }
@@ -259,7 +259,7 @@ pub fn main() !void {
     var simulation = s.Simulation{};
 
     // 3D camera init
-    var camera, const cameraMode = initCamera();
+    var camera, const camera_mode = initCamera();
 
     // 3D scene init
     const models = try scene.buildScene(50, alloc);
@@ -269,27 +269,27 @@ pub fn main() !void {
     var sensor = try s.Sensor.init(alloc, 800, 192, 360, 70);
     defer sensor.deinit();
     sensor.updateLocalAxes(sensor.fwd, sensor.up);
-    const maxPoints = sensor.res_h * sensor.res_v;
+    const max_points = sensor.res_h * sensor.res_v;
 
     // prepare mesh and materials for visualizing hits with instanced rendering
-    var sphereMesh = rl.genMeshSphere(0.02, 4, 4);
+    var sphere_mesh = rl.genMeshSphere(0.02, 4, 4);
     // loads mesh to GPU
-    rl.uploadMesh(&sphereMesh, false);
-    defer rl.unloadMesh(sphereMesh);
-    var classCounter: [CLASS_COUNT]usize = .{0} ** CLASS_COUNT;
-    const instMats, const instMatColors = try initInstanceMats();
-    var classTx = try initClassTxs(alloc, maxPoints);
-    defer for (classTx) |buf| alloc.free(buf);
+    rl.uploadMesh(&sphere_mesh, false);
+    defer rl.unloadMesh(sphere_mesh);
+    var class_counter: [CLASS_COUNT]usize = .{0} ** CLASS_COUNT;
+    const inst_mats, const inst_mat_colors = try initInstanceMats();
+    var class_tx = try initClassTxs(alloc, max_points);
+    defer for (class_tx) |buf| alloc.free(buf);
 
     // prepare multithreading for raycasting
-    const numThreads = mt.getNumThreads();
-    std.log.info("Using {} threads for raycasting.", .{numThreads});
-    var threads = try mt.ThreadResources.init(alloc, numThreads, maxPoints);
+    const num_threads = mt.getNumThreads();
+    std.log.info("Using {} threads for raycasting.", .{num_threads});
+    var threads = try mt.ThreadResources.init(alloc, num_threads, max_points);
     try threads.startWorkers();
     defer threads.deinit(alloc);
 
     while (!rl.windowShouldClose()) {
-        rl.updateCamera(&camera, cameraMode);
+        rl.updateCamera(&camera, camera_mode);
 
         const dt = rl.getFrameTime();
         sensorDt(&sensor, dt, &simulation.debug);
@@ -302,19 +302,19 @@ pub fn main() !void {
             JITTER_SCALE,
             threads.prngs,
             threads.hits,
-            maxPoints,
+            max_points,
         );
 
         // 2. let the pool run them
-        const nJobs = threads.contexts.len;
-        threads.dispatch(nJobs);
+        const n_jobs = threads.contexts.len;
+        threads.dispatch(n_jobs);
         try threads.wait(); // blocks until all rays done
 
         // 3. Merge results
-        const totalHitCount = mergeThreadHits(
+        const total_hit_count = mergeThreadHits(
             threads.hits,
-            &classTx,
-            &classCounter,
+            &class_tx,
+            &class_counter,
         );
 
         rl.beginDrawing();
@@ -326,10 +326,10 @@ pub fn main() !void {
             rl.beginMode3D(camera);
             defer rl.endMode3D();
 
-            draw3D(models, sphereMesh, &instMats, &classTx, &classCounter, &sensor, &simulation);
+            draw3D(models, sphere_mesh, &inst_mats, &class_tx, &class_counter, &sensor, &simulation);
         }
 
-        drawGUI(&simulation, &classCounter, totalHitCount, &instMatColors);
+        drawGUI(&simulation, &class_counter, total_hit_count, &inst_mat_colors);
     }
 
     rl.closeWindow();

@@ -23,9 +23,9 @@ fn pushObject(
     );
 }
 
-pub fn buildScene(objectCount: usize, gpa: std.mem.Allocator) ![]const s.Object {
+pub fn buildScene(object_count: usize, gpa: std.mem.Allocator) ![]const s.Object {
     // Pre-allocate for all dynamic objects + 1 ground plane
-    var list = try std.ArrayList(s.Object).initCapacity(gpa, objectCount + 1);
+    var list = try std.ArrayList(s.Object).initCapacity(gpa, object_count + 1);
     errdefer {
         // On error or exit, unload all models
         for (list.items) |m| rl.unloadModel(m.model);
@@ -37,10 +37,10 @@ pub fn buildScene(objectCount: usize, gpa: std.mem.Allocator) ![]const s.Object 
     const rng = prng.random();
 
     // Define how far out on the X/Z plane we’ll scatter objects
-    const planeHalfSize: f32 = 25.0;
+    const plane_half_size: f32 = 25.0;
 
     // Round-robin through Cube, Sphere, Cylinder
-    for (0..objectCount) |i| {
+    for (0..object_count) |i| {
         const kind = i % 3;
         var mesh: rl.Mesh = undefined;
         var class: u32 = 0;
@@ -64,9 +64,9 @@ pub fn buildScene(objectCount: usize, gpa: std.mem.Allocator) ![]const s.Object 
 
         // Random X and Z on top of ground plane, Y between 0 and 3
         // random x in [-planeHalfSize, planeHalfSize]
-        const x = (rng.float(f32) * (planeHalfSize * 2.0)) - planeHalfSize;
+        const x = (rng.float(f32) * (plane_half_size * 2.0)) - plane_half_size;
         // random z in [0, planeHalfSize*2]
-        const z = rng.float(f32) * (planeHalfSize * 2.0);
+        const z = rng.float(f32) * (plane_half_size * 2.0);
         // random y in [0, 3]
         const y = rng.float(f32) * 3.0;
 
@@ -76,10 +76,10 @@ pub fn buildScene(objectCount: usize, gpa: std.mem.Allocator) ![]const s.Object 
 
     // Finally: a big, flat ground plane
     try pushObject(
-        rl.genMeshCube(planeHalfSize * 2, 0.2, planeHalfSize * 2),
+        rl.genMeshCube(plane_half_size * 2, 0.2, plane_half_size * 2),
         0,
         rl.Color.beige,
-        rl.Matrix.translate(0, -0.1, planeHalfSize),
+        rl.Matrix.translate(0, -0.1, plane_half_size),
         &list,
     );
 
