@@ -87,3 +87,10 @@ pub fn raycastWorker(ctx: *RaycastContext) void {
         }
     }
 }
+
+pub fn getNumThreads() usize {
+    return blk: {
+        const cpu_count = Thread.getCpuCount() catch 1;
+        break :blk @max(1, cpu_count);
+    };
+}

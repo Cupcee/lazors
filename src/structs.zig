@@ -18,6 +18,10 @@ pub const Object = struct {
     bbox_ws: rl.BoundingBox,
 };
 
+pub const Simulation = struct {
+    debug: bool = true,
+};
+
 //------------------------------------------------------------------
 // SENSOR (runtime resolution)
 //------------------------------------------------------------------
@@ -28,6 +32,7 @@ pub const Sensor = struct {
     up: rl.Vector3 = .{ .x = 0, .y = 1, .z = 0 },
     yaw: f32 = 0,
     pitch: f32 = 0,
+    velocity: f32 = 5,
     turn_speed: f32 = std.math.pi,
     fov_h_deg: f32 = 120,
     fov_v_deg: f32 = 70,
