@@ -23,6 +23,8 @@ pub const Object = struct {
 
 pub const Simulation = struct {
     debug: bool = true,
+    num_objects: u32 = 30,
+    target_fps: i32 = 120,
 };
 
 //------------------------------------------------------------------

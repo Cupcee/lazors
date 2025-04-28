@@ -1,7 +1,6 @@
 const std = @import("std");
 const rl = @import("raylib");
 const s = @import("structs.zig");
-const MAX_RANGE = 100; // TODO: should take this from sensor instead
 
 pub const HitResult = struct {
     hit: bool = false,
@@ -109,7 +108,7 @@ pub const KDTree = struct {
     // ─────────────────────────────────────────────────────────────
     //  traversal
     // ─────────────────────────────────────────────────────────────
-    fn toLocalRay(ray_ws: rl.Ray, inv: rl.Matrix) rl.Ray {
+    fn toModelSpaceRay(ray_ws: rl.Ray, inv: rl.Matrix) rl.Ray {
         // position: full 4×4 transform (w = 1)
         const pos = rl.Vector3.transform(ray_ws.position, inv);
 
@@ -124,14 +123,10 @@ pub const KDTree = struct {
 
     pub fn closestHit(
         self: *const KDTree,
-        ray_in: rl.Ray,
+        ray_ws: rl.Ray,
         models: []const s.Object,
         max_range: f32,
     ) HitResult {
-        // ── 1. Work with a *normalised* world-space ray ─────────────────────────
-        var ray_ws = ray_in;
-        ray_ws.direction = rl.Vector3.normalize(ray_ws.direction); // 🔑
-
         var best = HitResult{ .distance = max_range };
 
         var stack: [64]u32 = undefined;
@@ -147,22 +142,18 @@ pub const KDTree = struct {
                 for (self.prim_idx[node.first .. node.first + node.count]) |pi| {
                     const obj = models[pi];
 
-                    // Note: this actually slows things?
-                    // const bc = rl.getRayCollisionBox(ray_ws, obj.bbox_ws);
-                    // if (!bc.hit or bc.distance >= best.distance) continue;
+                    const inv = obj.inv_transform; // cached
+                    const ray_ms = toModelSpaceRay(ray_ws, inv);
 
-                    const inv = obj.inv_transform; // cached inverse
-                    const ray_ms = toLocalRay(ray_ws, inv);
-
-                    if (obj.bvh.intersect(ray_ms, 0.0, MAX_RANGE)) |hit| {
+                    if (obj.bvh.intersect(ray_ms, 1e-4, best.distance)) |hit| {
                         const hit_ms = ray_ms.position.add(ray_ms.direction.scale(hit.t));
                         const hit_ws = rl.Vector3.transform(hit_ms, obj.model.transform);
-                        const dist_ws = hit_ws.subtract(ray_ws.position).length();
+                        // const dist_ws = hit_ws.subtract(ray_ms.position).length();
 
-                        if (dist_ws < best.distance) {
+                        if (hit.t < best.distance) {
                             best = .{
                                 .hit = true,
-                                .distance = dist_ws,
+                                .distance = hit.t,
                                 .point = hit_ws,
                                 .hit_class = obj.class,
                             };

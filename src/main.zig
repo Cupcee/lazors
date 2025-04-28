@@ -158,18 +158,17 @@ pub fn main() !void {
         _ = debug_allocator.deinit();
     };
 
-    rl.initWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "lazors");
-    rl.disableCursor();
-    rl.setTargetFPS(60);
-
     // simulation init
     var simulation = s.Simulation{};
+    rl.initWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "lazors");
+    rl.disableCursor();
+    rl.setTargetFPS(simulation.target_fps);
 
     // 3D camera init
     var camera, const camera_mode = initCamera();
 
     // 3D scene init
-    const models = try scene.buildScene(50, alloc);
+    const models = try scene.buildScene(simulation.num_objects, alloc);
     var kdtree = try kd.KDTree.build(alloc, models);
     defer kdtree.deinit(alloc);
     defer for (models) |*m| {
