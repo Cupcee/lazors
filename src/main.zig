@@ -51,7 +51,7 @@ fn initInstanceMats() !struct { [CLASS_COUNT]rl.Material, [CLASS_COUNT]rl.Color 
     inst_shader.locs[@intFromEnum(rl.ShaderLocationIndex.matrix_model)] =
         rl.getShaderLocation(inst_shader, "instanceTransform");
 
-    const inst_mat_colors: [CLASS_COUNT]rl.Color = .{ rl.Color.black, rl.Color.red, rl.Color.green, rl.Color.yellow };
+    const inst_mat_colors: [CLASS_COUNT]rl.Color = .{ rl.Color.black, rl.Color.red, rl.Color.green, rl.Color.yellow, rl.Color.blue };
     var inst_mats: [CLASS_COUNT]rl.Material = undefined;
     for (&inst_mats, 0..) |*m, i| {
         m.* = try rl.loadMaterialDefault();

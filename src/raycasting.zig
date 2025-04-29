@@ -7,7 +7,7 @@ const kd = @import("kdtree.zig");
 const Acquire = std.builtin.AtomicOrder.acquire;
 const Release = std.builtin.AtomicOrder.release;
 const AcqRel = std.builtin.AtomicOrder.acq_rel;
-pub const CLASS_COUNT = 4;
+pub const CLASS_COUNT = 5;
 
 // ────────────────────────────────────────────────────────────────
 //  DATA TYPES
