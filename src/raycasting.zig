@@ -3,7 +3,6 @@ const std = @import("std");
 const builtin = @import("builtin");
 const rand = std.Random;
 const s = @import("structs.zig");
-const kd = @import("kdtree.zig");
 const Acquire = std.builtin.AtomicOrder.acquire;
 const Release = std.builtin.AtomicOrder.release;
 const AcqRel = std.builtin.AtomicOrder.acq_rel;
@@ -24,13 +23,65 @@ pub const RaycastContext = struct {
     end_index: usize,
     sensor: *const s.Sensor,
     models: []const s.Object,
-    kdtree: *const kd.KDTree,
     jitter_scale: f32,
     thread_prng: *rand.DefaultPrng,
     thread_hits: *std.ArrayList(ThreadHit),
     points_slice: []s.RayPoint,
     skip: bool = false, // this allows skipping running the workload, if it is empty
 };
+
+const HitResult = struct {
+    hit: bool = false,
+    distance: f32 = 0,
+    point: rl.Vector3 = .{ .x = 0, .y = 0, .z = 0 },
+    hit_class: u32 = 0,
+};
+
+fn toModelSpaceRay(ray_ws: rl.Ray, inv: rl.Matrix) rl.Ray {
+    // position: full 4×4 transform (w = 1)
+    const pos = rl.Vector3.transform(ray_ws.position, inv);
+
+    // direction: rotate & scale only (w = 0)
+    var dir = rl.Vector3{
+        .x = ray_ws.direction.x * inv.m0 + ray_ws.direction.y * inv.m4 + ray_ws.direction.z * inv.m8,
+        .y = ray_ws.direction.x * inv.m1 + ray_ws.direction.y * inv.m5 + ray_ws.direction.z * inv.m9,
+        .z = ray_ws.direction.x * inv.m2 + ray_ws.direction.y * inv.m6 + ray_ws.direction.z * inv.m10,
+    };
+    dir = rl.Vector3.normalize(dir); // ***-- keep *t* a distance in model-space
+    return rl.Ray{ .position = pos, .direction = dir };
+}
+
+fn closestHit(ray_ws: rl.Ray, models: []const s.Object, max_range: f32) HitResult {
+    var best = HitResult{ .distance = max_range };
+    for (models) |model| {
+        // std.debug.print("{d}\n", .{model.class});
+        const c = rl.getRayCollisionBox(ray_ws, model.bbox_ws);
+        if (!c.hit or c.distance > best.distance) continue;
+        const inv = model.inv_transform; // cached
+        const ray_ms = toModelSpaceRay(ray_ws, inv);
+        const sx = @abs(inv.m0);
+        const sy = @abs(inv.m5);
+        const sz = @abs(inv.m10);
+        const max_scale = @max(@max(sx, sy), sz);
+        const t_max = best.distance * max_scale;
+
+        if (model.bvh.intersect(ray_ms, 1e-4, t_max)) |hit| {
+            const hit_ms = ray_ms.position.add(ray_ms.direction.scale(hit.t));
+            const hit_ws = rl.Vector3.transform(hit_ms, model.model.transform);
+            const dist_ws = hit_ws.distance(ray_ws.position);
+
+            if (dist_ws < best.distance) {
+                best = .{
+                    .hit = true,
+                    .distance = dist_ws,
+                    .point = hit_ws,
+                    .hit_class = model.class,
+                };
+            }
+        }
+    }
+    return best;
+}
 
 /// Worker function for a thread.
 pub fn raycastWorker(ctx: *const RaycastContext) void {
@@ -51,7 +102,7 @@ pub fn raycastWorker(ctx: *const RaycastContext) void {
 
         const ray = rl.Ray{ .position = ctx.sensor.pos, .direction = dir };
 
-        const nearest = ctx.kdtree.closestHit(ray, ctx.models, ctx.sensor.max_range);
+        const nearest = closestHit(ray, ctx.models, ctx.sensor.max_range);
         const contact = if (nearest.hit) nearest.point else rl.Vector3.zero();
 
         ctx.points_slice[local_i] = .{
@@ -76,7 +127,6 @@ pub fn prepareRaycastContexts(
     contexts: []RaycastContext,
     sensor: *s.Sensor,
     models: []const s.Object,
-    kdtree: *const kd.KDTree,
     jitter_scale: f32,
     thread_prngs: []rand.DefaultPrng,
     thread_hit_lists: []std.ArrayList(ThreadHit),
@@ -106,7 +156,6 @@ pub fn prepareRaycastContexts(
             .end_index = end,
             .sensor = sensor,
             .models = models,
-            .kdtree = kdtree,
             .jitter_scale = jitter_scale,
             .thread_prng = &thread_prngs[i],
             .thread_hits = &thread_hit_lists[i],

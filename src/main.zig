@@ -6,7 +6,6 @@ const std = @import("std");
 const Thread = std.Thread;
 const builtin = @import("builtin");
 const rand = std.Random;
-const kd = @import("kdtree.zig");
 const rl = @import("raylib"); // ziraylib package
 const s = @import("structs.zig");
 const rc = @import("raycasting.zig");
@@ -128,7 +127,6 @@ fn draw3D(
     sensor: *s.Sensor,
     simulation: *s.Simulation,
 ) void {
-    // rl.drawGrid(20, 1);
     for (models) |model| {
         rl.drawModel(model.model, rl.Vector3.zero(), 1, model.color);
     }
@@ -169,8 +167,6 @@ pub fn main() !void {
 
     // 3D scene init
     const models = try scene.buildScene(simulation.num_objects, alloc);
-    var kdtree = try kd.KDTree.build(alloc, models);
-    defer kdtree.deinit(alloc);
     defer for (models) |*m| {
         m.bvh.deinit();
         rl.unloadModel(m.*.model);
@@ -197,7 +193,6 @@ pub fn main() !void {
     var thread_resources = try rc.ThreadResources.init(alloc, num_threads, max_points);
     defer thread_resources.deinit(alloc);
     const thread_ctx = try alloc.alloc(rc.RaycastContext, num_threads);
-    // defer for (thread_ctx) |ctx| alloc.free(ctx);
     var pool = try RayPool.init(alloc, num_threads, thread_ctx);
     defer pool.deinit(alloc);
     try pool.startWorkers();
@@ -213,7 +208,6 @@ pub fn main() !void {
             thread_ctx,
             &sensor,
             models,
-            &kdtree,
             JITTER_SCALE,
             thread_resources.prngs,
             thread_resources.hits,

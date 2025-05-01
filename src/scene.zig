@@ -5,7 +5,6 @@ const s = @import("structs.zig");
 const math = @import("math.zig");
 const bvh = @import("bvh.zig");
 
-// TODO: support building from multiple meshes
 /// Build a BVH for a *single* raylib Mesh.
 /// The function copies the data so the BVH stays valid even if the Mesh is unloaded.
 ///
@@ -41,6 +40,115 @@ pub fn buildBVHFromMesh(alloc: std.mem.Allocator, mesh: rl.Mesh) !bvh.BVH {
 
     // ---- build BVH ---------------------------------------------------------
     return bvh.BVH.build(alloc, verts, indices);
+}
+
+/// Build one BVH over *all* meshes in a model by flattening their
+/// vertex/index data into a single buffer.
+///
+/// alloc      : memory allocator
+/// meshes     : C-pointer to raylib meshes
+/// meshCount  : number of meshes the pointer refers to
+///
+/// The function copies every vertex and **every index** (three per
+/// triangle) into new contiguous arrays so the BVH stays valid even
+/// after the original meshes are unloaded.
+pub fn buildBVHFromMeshes(
+    alloc: std.mem.Allocator,
+    meshes: [*c]rl.Mesh,
+    meshCount: usize,
+) !bvh.BVH {
+    // Treat the C pointer + count as a Zig slice
+    const mesh_slice = meshes[0..meshCount];
+
+    // ────────────────────────────────────────────────
+    // 1) Count how much memory we need
+    // ────────────────────────────────────────────────
+    var total_verts: usize = 0;
+    var total_tris: usize = 0;
+    for (mesh_slice) |mesh| {
+        total_verts += @intCast(mesh.vertexCount);
+        total_tris += @intCast(mesh.triangleCount);
+    }
+    const total_indices: usize = total_tris * 3;
+
+    // ────────────────────────────────────────────────
+    // 2) Allocate flat buffers
+    // ────────────────────────────────────────────────
+    var verts = try alloc.alloc(rl.Vector3, total_verts);
+    var indices = try alloc.alloc(u32, total_indices);
+
+    // ────────────────────────────────────────────────
+    // 3) Copy vertices + (offset) indices mesh by mesh
+    // ────────────────────────────────────────────────
+    var v_off: usize = 0; // running vertex offset
+    var i_off: usize = 0; // running index  offset
+
+    for (mesh_slice) |mesh| {
+        // -------- vertices --------
+        const vcount: usize = @intCast(mesh.vertexCount);
+        const src_verts =
+            @as([*]const f32, @ptrCast(mesh.vertices))[0 .. vcount * 3];
+
+        for (0..vcount) |vi| {
+            verts[v_off + vi] = rl.Vector3{
+                .x = src_verts[vi * 3 + 0],
+                .y = src_verts[vi * 3 + 1],
+                .z = src_verts[vi * 3 + 2],
+            };
+        }
+
+        // -------- indices ---------
+        const tri_count: usize = @intCast(mesh.triangleCount);
+        const idx_count: usize = tri_count * 3; // *** three per triangle ***
+
+        if (mesh.indices) |idx_ptr| {
+            const src_idx16 =
+                @as([*]const u16, @ptrCast(idx_ptr))[0..idx_count];
+
+            for (src_idx16, 0..) |idx16, k| {
+                // offset each index so it points into the *flat* vertex list
+                const idx16c: u32 = @intCast(idx16);
+                const voffc: u32 = @intCast(v_off);
+                indices[i_off + k] = idx16c + voffc;
+            }
+        } else {
+            // Non-indexed mesh: vertices appear sequentially, already 0..vcount-1
+            for (0..idx_count) |k|
+                indices[i_off + k] = @intCast(v_off + k);
+        }
+
+        // advance offsets for the next mesh
+        v_off += vcount;
+        i_off += idx_count;
+    }
+
+    // ────────────────────────────────────────────────
+    // 4) Build a BVH over the combined buffers
+    // ────────────────────────────────────────────────
+    return bvh.BVH.build(alloc, verts, indices);
+}
+
+/// Compute the AABB of a non-empty slice of raylib Meshes (in local space).
+pub fn getMeshesBoundingBox(meshes: []const rl.Mesh) rl.BoundingBox {
+    // start with the first mesh’s box
+    var bb = rl.getMeshBoundingBox(meshes[0]);
+
+    // union in each subsequent mesh
+    for (meshes[1..]) |m| {
+        const m_bb = rl.getMeshBoundingBox(m);
+        bb.min = rl.Vector3.min(bb.min, m_bb.min);
+        bb.max = rl.Vector3.max(bb.max, m_bb.max);
+    }
+
+    return bb;
+}
+
+/// Overload for C-style pointer + count
+pub fn getMeshesBoundingBoxPtr(
+    meshes: [*c]rl.Mesh,
+    meshCount: usize,
+) rl.BoundingBox {
+    return getMeshesBoundingBox(meshes[0..meshCount]);
 }
 
 //------------------------------------------------------------------
@@ -106,18 +214,12 @@ pub fn buildScene(object_count: usize, alloc: std.mem.Allocator) ![]const s.Obje
                 var mdl = try rl.loadModel("resources/objects/scene.gltf");
                 // build a scale matrix
                 const scale = 0.01;
-                const mScale = rl.Matrix.scale(scale, scale, scale);
-                // build a translate matrix for your desired world position
-                const mTranslate = rl.Matrix.translate(x, y, z);
+                const scale_trans = rl.Matrix.scale(scale, scale, scale);
+                mdl.transform = rl.Matrix.multiply(scale_trans, transform);
 
-                // combine them so you scale first, then translate
-                mdl.transform = rl.Matrix.multiply(mTranslate, mScale);
-
-                // build BVH off the first mesh in the loaded model:
-                const mesh = mdl.meshes[0];
-                const local_bb = rl.getMeshBoundingBox(mesh);
-                const world_bb = math.transformBBox(local_bb, transform);
-                const mesh_bvh = try buildBVHFromMesh(alloc, mesh);
+                const local_bb = getMeshesBoundingBoxPtr(mdl.meshes, @intCast(mdl.meshCount));
+                const world_bb = math.transformBBox(local_bb, mdl.transform);
+                const mesh_bvh = try buildBVHFromMeshes(alloc, mdl.meshes, @intCast(mdl.meshCount));
 
                 const obj = s.Object{
                     .model = mdl,
