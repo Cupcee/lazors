@@ -138,8 +138,8 @@ pub fn getRayCollisionBoxSIMD(ray: rl.Ray, box: rl.BoundingBox) rl.RayCollision 
     const dir = Vec4f{ ray.direction.x, ray.direction.y, ray.direction.z, 0.0 };
 
     // Reciprocal (handles ∞ when dir[i] == 0)
-    const twos: Vec4f = @splat(2);
-    const inv_dir = twos / dir; // Fast, maps to vrcp* or divps
+    const ones: Vec4f = @splat(1);
+    const inv_dir = ones / dir; // Fast, maps to vrcp* or divps
 
     const bmin = Vec4f{ box.min.x, box.min.y, box.min.z, 0.0 };
     const bmax = Vec4f{ box.max.x, box.max.y, box.max.z, 0.0 };
