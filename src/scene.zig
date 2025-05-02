@@ -177,7 +177,6 @@ fn pushObject(
         .color = color,
         .bbox_ws = world_bb,
         .bvh = mesh_bvh,
-        .inv_transform = inv_transform,
         .transform_simd = rlsimd.Mat4x4_SIMD.fromRlMatrix(mdl.transform),
         .inv_transform_simd = rlsimd.Mat4x4_SIMD.fromRlMatrix(inv_transform),
     };
@@ -234,7 +233,6 @@ pub fn buildScene(object_count: usize, alloc: std.mem.Allocator) ![]const s.Obje
                     .color = rl.Color.dark_gray,
                     .bbox_ws = world_bb,
                     .bvh = mesh_bvh,
-                    .inv_transform = inv_transform,
                     .transform_simd = rlsimd.Mat4x4_SIMD.fromRlMatrix(mdl.transform),
                     .inv_transform_simd = rlsimd.Mat4x4_SIMD.fromRlMatrix(inv_transform),
                 };

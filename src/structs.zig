@@ -7,7 +7,7 @@ const bvh = @import("bvh.zig");
 // BASIC TYPES
 //------------------------------------------------------------------
 pub const RayPoint = struct {
-    xyz: rl.Vector3 = .{ .x = 0, .y = 0, .z = 0 },
+    xyz: rlsimd.Vec4f = .{ 0, 0, 0, 1 },
     hit: bool = false,
     hit_class: u32 = 0,
 };
@@ -19,7 +19,7 @@ pub const Object = struct {
     /// world-space axis-aligned bounding box (step 1)
     bbox_ws: rl.BoundingBox,
     bvh: bvh.BVH,
-    inv_transform: rl.Matrix, // cached
+    // inv_transform: rl.Matrix, // cached
     transform_simd: rlsimd.Mat4x4_SIMD,
     inv_transform_simd: rlsimd.Mat4x4_SIMD,
 };
@@ -36,8 +36,8 @@ pub const Simulation = struct {
 pub const Sensor = struct {
     // –– pose and optics ––
     pos: rl.Vector3 = .{ .x = 0, .y = 1, .z = 0 },
-    fwd: rl.Vector3 = .{ .x = 0, .y = 0, .z = 1 },
-    up: rl.Vector3 = .{ .x = 0, .y = 1, .z = 0 },
+    fwd: rlsimd.Vec4f = .{ 0, 0, 1, 1 },
+    up: rlsimd.Vec4f = .{ 0, 1, 0, 1 },
     yaw: f32 = 0,
     pitch: f32 = 0,
     velocity: f32 = 5,
@@ -51,12 +51,12 @@ pub const Sensor = struct {
     res_v: usize,
 
     // –– working buffers ––
-    dirs: []rl.Vector3, // pre-computed directions (sensor space)
+    dirs: []rlsimd.Vec4f, // pre-computed directions (sensor space)
     points: []RayPoint, // collision results (refilled every frame)
-    transforms: []rl.Matrix, // used for instanced-draw spheres
+    // transforms: []rl.Matrix, // used for instanced-draw spheres
 
     allocator: std.mem.Allocator,
-    local_to_world: rl.Matrix,
+    // local_to_world: rl.Matrix,
     local_to_world_simd: rlsimd.Mat4x4_SIMD,
 
     //--------------------------------------------------------------
@@ -69,8 +69,7 @@ pub const Sensor = struct {
             .fov_v_deg = fov_v_deg,
             .dirs = &.{},
             .points = &.{},
-            .transforms = &.{},
-            .local_to_world = rl.Matrix.identity(),
+            // .local_to_world = rl.Matrix.identity(),
             .local_to_world_simd = rlsimd.Mat4x4_SIMD.fromRlMatrix(rl.Matrix.identity()),
         };
         try self.allocateBuffers();
@@ -81,7 +80,7 @@ pub const Sensor = struct {
     pub fn deinit(self: *Sensor) void {
         self.allocator.free(self.dirs);
         self.allocator.free(self.points);
-        self.allocator.free(self.transforms);
+        // self.allocator.free(self.transforms);
     }
 
     /// Change the grid size on the fly (buffers are re-created).
@@ -89,7 +88,7 @@ pub const Sensor = struct {
         if (w == self.res_h and h == self.res_v) return;
         self.allocator.free(self.dirs);
         self.allocator.free(self.points);
-        self.allocator.free(self.transforms);
+        // self.allocator.free(self.transforms);
         self.res_h = w;
         self.res_v = h;
         try self.allocateBuffers();
@@ -97,40 +96,39 @@ pub const Sensor = struct {
     }
 
     /// Update `fwd`/`up` and build the 3×3 rotation matrix
-    pub fn updateLocalAxes(self: *Sensor, fwd: rl.Vector3, up: rl.Vector3) void {
-        const fwd_simd = rlsimd.normalizeSIMD(rlsimd.vec3ToVec4W(fwd, 0.0));
-        const up_simd = rlsimd.normalizeSIMD(rlsimd.vec3ToVec4W(up, 0.0));
-        self.fwd = rlsimd.vec4ToVec3(fwd_simd);
-        self.up = rlsimd.vec4ToVec3(up_simd);
+    pub fn updateLocalAxes(self: *Sensor, fwd: rlsimd.Vec4f, up: rlsimd.Vec4f) void {
+        const fwd_simd = rlsimd.normalizeSIMD(fwd);
+        const up_simd = rlsimd.normalizeSIMD(up);
+        self.fwd = fwd_simd;
+        self.up = up_simd;
         const right_simd = rlsimd.normalizeSIMD(rlsimd.crossSIMD(up_simd, fwd_simd));
-        const right = rlsimd.vec4ToVec3(right_simd);
-        self.local_to_world = .{
-            .m0 = right.x,
-            .m1 = right.y,
-            .m2 = right.z,
+        const local_to_world: rl.Matrix = .{
+            .m0 = right_simd[0],
+            .m1 = right_simd[1],
+            .m2 = right_simd[2],
             .m3 = 0,
-            .m4 = self.up.x,
-            .m5 = self.up.y,
-            .m6 = self.up.z,
+            .m4 = self.up[0],
+            .m5 = self.up[1],
+            .m6 = self.up[2],
             .m7 = 0,
-            .m8 = self.fwd.x,
-            .m9 = self.fwd.y,
-            .m10 = self.fwd.z,
+            .m8 = self.fwd[0],
+            .m9 = self.fwd[1],
+            .m10 = self.fwd[2],
             .m11 = 0,
             .m12 = 0,
             .m13 = 0,
             .m14 = 0,
             .m15 = 1,
         };
-        self.local_to_world_simd = rlsimd.Mat4x4_SIMD.fromRlMatrix(self.local_to_world);
+        self.local_to_world_simd = rlsimd.Mat4x4_SIMD.fromRlMatrix(local_to_world);
     }
 
     //–––––––––––––––––––––––––––––––––––––––––––––––––––––––––––
     fn allocateBuffers(self: *Sensor) !void {
         const n = self.res_h * self.res_v;
-        self.dirs = try self.allocator.alloc(rl.Vector3, n);
+        self.dirs = try self.allocator.alloc(rlsimd.Vec4f, n);
         self.points = try self.allocator.alloc(RayPoint, n);
-        self.transforms = try self.allocator.alloc(rl.Matrix, n);
+        // self.transforms = try self.allocator.alloc(rl.Matrix, n);
     }
 
     /// Pay the sin/cos cost only once, when the grid size changes.
@@ -149,9 +147,10 @@ pub const Sensor = struct {
                 const fh: f32 = @floatFromInt(h);
                 const az = (fh - (res_hf * 0.5)) * h_step;
                 self.dirs[idx] = .{
-                    .x = std.math.cos(el) * std.math.sin(az),
-                    .y = std.math.sin(el),
-                    .z = std.math.cos(el) * std.math.cos(az),
+                    @cos(el) * @sin(az),
+                    @sin(el),
+                    @cos(el) * @cos(az),
+                    1,
                 };
                 idx += 1;
             }

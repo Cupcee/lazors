@@ -35,11 +35,12 @@ fn sensorDt(sensor: *s.Sensor, dt: f32, debug: *bool) void {
     sensor.pitch = std.math.clamp(sensor.pitch, -half_pi, half_pi);
 
     sensor.fwd = .{
-        .x = std.math.sin(sensor.yaw) * std.math.cos(sensor.pitch),
-        .y = std.math.sin(sensor.pitch),
-        .z = std.math.cos(sensor.yaw) * std.math.cos(sensor.pitch),
+        @sin(sensor.yaw) * @cos(sensor.pitch),
+        @sin(sensor.pitch),
+        @cos(sensor.yaw) * @cos(sensor.pitch),
+        0,
     };
-    sensor.up = .{ .x = 0, .y = 1, .z = 0 };
+    sensor.up = .{ 0, 1, 0, 0 };
     sensor.updateLocalAxes(sensor.fwd, sensor.up);
 }
 

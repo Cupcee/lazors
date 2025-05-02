@@ -34,7 +34,7 @@ pub const RaycastContext = struct {
 const HitResult = struct {
     hit: bool = false,
     distance: f32 = 0,
-    point: rl.Vector3 = .{ .x = 0, .y = 0, .z = 0 },
+    point: rlsimd.Vec4f = .{ 0, 0, 0, 1 },
     hit_class: u32 = 0,
 };
 
@@ -78,17 +78,11 @@ fn closestHitSIMD(ray_ws: rl.Ray, models: []const s.Object, max_range: f32) HitR
     const ray_pos_ws_simd = rlsimd.vec3ToVec4W(ray_ws.position, 1.0); // Load once
 
     for (models) |model| {
-        // BBox test (keep using Raylib for now, could be optimized too)
-        const c = rl.getRayCollisionBox(ray_ws, model.bbox_ws);
+        const c = rlsimd.getRayCollisionBoxSIMD(ray_ws, model.bbox_ws);
         if (!c.hit or c.distance > best.distance) continue;
 
-        // Pre-convert matrices to SIMD format if not already done
-        // Assuming s.Object now stores inv_transform_simd and transform_simd
-        // const inv_simd = Mat4x4_SIMD.fromRlMatrix(model.inv_transform);
-        // const transform_simd = Mat4x4_SIMD.fromRlMatrix(model.model.transform);
-        // OR assume they are pre-cached in the s.Object struct:
-        const inv_simd = model.inv_transform_simd; // Assumes s.Object is updated
-        const transform_simd = model.transform_simd; // Assumes s.Object is updated
+        const inv_simd = model.inv_transform_simd;
+        const transform_simd = model.transform_simd;
 
         const ray_ms = toModelSpaceRaySIMD(ray_ws, inv_simd);
 
@@ -99,43 +93,22 @@ fn closestHitSIMD(ray_ws: rl.Ray, models: []const s.Object, max_range: f32) HitR
         const max_scale = @max(@max(sx, sy), sz);
         const t_max = best.distance * max_scale;
 
-        // *** BVH Intersection ***
-        // This is CRITICAL. Assume model.bvh.intersect now uses the
-        // rayTriangleIntersectSIMD from the previous example internally.
-        // std.debug.print("Checking Model: t_max={d}\n", .{t_max}); // Identify model if possible
         const maybe_hit = model.bvh.intersect(ray_ms, 1e-4, t_max);
-        if (maybe_hit) |hit| { // hit.t is distance in model space
-            // std.debug.print("  -> BVH Hit! t = {d}\n", .{hit.t});
+        if (maybe_hit) |hit| {
             const splat_t: rlsimd.Vec4f = @splat(hit.t);
             const hit_ms_simd = rlsimd.vec3ToVec4W(ray_ms.position, 1.0) + rlsimd.vec3ToVec4W(ray_ms.direction, 0.0) * splat_t;
             const hit_ws_simd = rlsimd.transformSIMD(hit_ms_simd, transform_simd); // Use model's world transform SIMD matrix
-            // const hit_ws_vec3 = vec4ToVec3(hit_ws_simd);
-
-            // Compare hit point
-            // const original_hit_ms_vec3 = ray_ms.position.add(ray_ms.direction.scale(hit.t));
-            // const original_hit_ws_vec3 = rl.Vector3.transform(original_hit_ms_vec3, model.model.transform); // Use original rl.Matrix
-            // std.debug.print("  Hit WS Compare: SIMD={any}, Original={any}\n", .{ hit_ws_vec3, original_hit_ws_vec3 });
 
             // Compare distance
             const dist_ws = rlsimd.distanceSIMD(hit_ws_simd, ray_pos_ws_simd);
-            // const dist_ws_scalar_check = rl.Vector3.distance(hit_ws_vec3, ray_ws.position);
-            // std.debug.print("  Dist WS Compare: SIMD={d}, ScalarCheck={d}\n", .{ dist_ws, dist_ws_scalar_check });
-
-            // std.debug.print("  Final Check: dist_ws ({d}) < best.distance ({d}) ?\n", .{ dist_ws, best.distance });
             if (dist_ws < best.distance) {
-                // std.debug.print("    -> New Best Hit!\n", .{});
-                // ... update best ...
                 best = .{
                     .hit = true,
                     .distance = dist_ws,
-                    .point = rlsimd.vec4ToVec3(hit_ws_simd), // Extract from SIMD vector
+                    .point = hit_ws_simd,
                     .hit_class = model.class,
                 };
-            } else {
-                // std.debug.print("    -> Hit Rejected (dist >= best.distance)\n", .{});
             }
-        } else {
-            // std.debug.print("  -> BVH Miss\n", .{});
         }
     }
     return best;
@@ -184,7 +157,7 @@ pub fn raycastWorker(ctx: *const RaycastContext) void {
     for (ctx.start_index..ctx.end_index) |global_i| {
         const local_i = global_i - ctx.start_index;
 
-        const dir_local_simd = rlsimd.vec3ToVec4W(ctx.sensor.dirs[global_i], 0.0);
+        const dir_local_simd = ctx.sensor.dirs[global_i];
         var dir_ws_simd = rlsimd.transformSIMD(dir_local_simd, ctx.sensor.local_to_world_simd);
         // Add jitter (using SIMD)
         // Create a jitter vector - Can potentially optimize random generation later
@@ -202,7 +175,7 @@ pub fn raycastWorker(ctx: *const RaycastContext) void {
         const ray = rl.Ray{ .position = ctx.sensor.pos, .direction = rlsimd.vec4ToVec3(dir_norm_simd) };
 
         const nearest = closestHitSIMD(ray, ctx.models, ctx.sensor.max_range);
-        const contact = if (nearest.hit) nearest.point else rl.Vector3.zero();
+        const contact = if (nearest.hit) nearest.point else rlsimd.Vec4f{ 0, 0, 0, 1 };
 
         ctx.points_slice[local_i] = .{
             .xyz = contact,
@@ -211,7 +184,7 @@ pub fn raycastWorker(ctx: *const RaycastContext) void {
         };
 
         if (nearest.hit) {
-            const transform = rl.Matrix.translate(contact.x, contact.y, contact.z);
+            const transform = rl.Matrix.translate(contact[0], contact[1], contact[2]);
             hits.items[hit_ix] = .{ .hit_class = nearest.hit_class, .transform = transform };
             hit_ix += 1;
         }

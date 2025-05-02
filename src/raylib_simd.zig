@@ -131,3 +131,67 @@ pub fn crossSIMD(a: Vec4f, b: Vec4f) Vec4f {
     // result = (a_yzx * b_zxy) - (a_zxy * b_yzx)
     return (a_yzx * b_zxy) - (a_zxy * b_yzx);
 }
+
+// ---- SIMD Ray–AABB intersection ---------------------
+pub fn getRayCollisionBoxSIMD(ray: rl.Ray, box: rl.BoundingBox) rl.RayCollision {
+    const origin = Vec4f{ ray.position.x, ray.position.y, ray.position.z, 0.0 };
+    const dir = Vec4f{ ray.direction.x, ray.direction.y, ray.direction.z, 0.0 };
+
+    // Reciprocal (handles ∞ when dir[i] == 0)
+    const twos: Vec4f = @splat(2);
+    const inv_dir = twos / dir; // Fast, maps to vrcp* or divps
+
+    const bmin = Vec4f{ box.min.x, box.min.y, box.min.z, 0.0 };
+    const bmax = Vec4f{ box.max.x, box.max.y, box.max.z, 0.0 };
+
+    // (b - o) * inv_dir
+    const t1 = (bmin - origin) * inv_dir;
+    const t2 = (bmax - origin) * inv_dir;
+
+    // Per‑component min/max
+    const tmin_v = @min(t1, t2);
+    const tmax_v = @max(t1, t2);
+
+    // Horizontal reduce
+    const t_near = @reduce(.Max, tmin_v);
+    const t_far = @reduce(.Min, tmax_v);
+
+    var result: rl.RayCollision = .{ .hit = false, .distance = 0, .point = ray.position, .normal = .{ .x = 0, .y = 0, .z = 0 } };
+
+    // Early‑out: ray origin already inside box
+    if (t_near < 0.0 and t_far >= 0.0) {
+        result.hit = true;
+        result.distance = 0.0;
+        return result;
+    }
+
+    if (t_far >= @max(t_near, 0.0)) {
+        // We have an intersection – record the distance of first contact
+        result.hit = true;
+        result.distance = t_near;
+        result.point = .{
+            .x = ray.position.x + ray.direction.x * t_near,
+            .y = ray.position.y + ray.direction.y * t_near,
+            .z = ray.position.z + ray.direction.z * t_near,
+        };
+
+        // Optional: compute the box face normal that was hit
+        const eps = 1e-5;
+        const hit_pos = result.point;
+        if (@abs(hit_pos.x - box.min.x) < eps) {
+            result.normal = .{ .x = -1, .y = 0, .z = 0 };
+        } else if (@abs(hit_pos.x - box.max.x) < eps) {
+            result.normal = .{ .x = 1, .y = 0, .z = 0 };
+        } else if (@abs(hit_pos.y - box.min.y) < eps) {
+            result.normal = .{ .x = 0, .y = -1, .z = 0 };
+        } else if (@abs(hit_pos.y - box.max.y) < eps) {
+            result.normal = .{ .x = 0, .y = 1, .z = 0 };
+        } else if (@abs(hit_pos.z - box.min.z) < eps) {
+            result.normal = .{ .x = 0, .y = 0, .z = -1 };
+        } else if (@abs(hit_pos.z - box.max.z) < eps) {
+            result.normal = .{ .x = 0, .y = 0, .z = 1 };
+        }
+    }
+
+    return result;
+}
