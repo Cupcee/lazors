@@ -3,6 +3,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const rand = std.Random;
 const s = @import("structs.zig");
+const rlsimd = @import("raylib_simd.zig");
 const Acquire = std.builtin.AtomicOrder.acquire;
 const Release = std.builtin.AtomicOrder.release;
 const AcqRel = std.builtin.AtomicOrder.acq_rel;
@@ -37,6 +38,27 @@ const HitResult = struct {
     hit_class: u32 = 0,
 };
 
+fn toModelSpaceRaySIMD(ray_ws: rl.Ray, inv_simd: rlsimd.Mat4x4_SIMD) rl.Ray {
+    // Load world-space ray vectors into SIMD registers
+    const pos_ws_simd = rlsimd.vec3ToVec4W(ray_ws.position, 1.0); // w=1 for position
+    const dir_ws_simd = rlsimd.vec3ToVec4W(ray_ws.direction, 0.0); // w=0 for direction
+
+    // Transform position using SIMD
+    const pos_ms_simd = rlsimd.transformSIMD(pos_ws_simd, inv_simd);
+
+    // Transform direction using SIMD
+    // Note: Direction transform ignores translation, which transformSIMD handles correctly if w_in=0
+    const dir_ms_simd_unnormalized = rlsimd.transformSIMD(dir_ws_simd, inv_simd);
+
+    // Normalize direction using SIMD
+    const dir_ms_simd = rlsimd.normalizeSIMD(dir_ms_simd_unnormalized);
+
+    return rl.Ray{
+        .position = rlsimd.vec4ToVec3(pos_ms_simd),
+        .direction = rlsimd.vec4ToVec3(dir_ms_simd),
+    };
+}
+
 fn toModelSpaceRay(ray_ws: rl.Ray, inv: rl.Matrix) rl.Ray {
     // position: full 4×4 transform (w = 1)
     const pos = rl.Vector3.transform(ray_ws.position, inv);
@@ -49,6 +71,74 @@ fn toModelSpaceRay(ray_ws: rl.Ray, inv: rl.Matrix) rl.Ray {
     };
     dir = rl.Vector3.normalize(dir); // ***-- keep *t* a distance in model-space
     return rl.Ray{ .position = pos, .direction = dir };
+}
+
+fn closestHitSIMD(ray_ws: rl.Ray, models: []const s.Object, max_range: f32) HitResult {
+    var best = HitResult{ .distance = max_range };
+    const ray_pos_ws_simd = rlsimd.vec3ToVec4W(ray_ws.position, 1.0); // Load once
+
+    for (models) |model| {
+        // BBox test (keep using Raylib for now, could be optimized too)
+        const c = rl.getRayCollisionBox(ray_ws, model.bbox_ws);
+        if (!c.hit or c.distance > best.distance) continue;
+
+        // Pre-convert matrices to SIMD format if not already done
+        // Assuming s.Object now stores inv_transform_simd and transform_simd
+        // const inv_simd = Mat4x4_SIMD.fromRlMatrix(model.inv_transform);
+        // const transform_simd = Mat4x4_SIMD.fromRlMatrix(model.model.transform);
+        // OR assume they are pre-cached in the s.Object struct:
+        const inv_simd = model.inv_transform_simd; // Assumes s.Object is updated
+        const transform_simd = model.transform_simd; // Assumes s.Object is updated
+
+        const ray_ms = toModelSpaceRaySIMD(ray_ws, inv_simd);
+
+        // Calculate max scale for t_max adjustment (scalar part, unchanged)
+        const sx = @abs(inv_simd.col0[0]); // Access SIMD matrix components
+        const sy = @abs(inv_simd.col1[1]);
+        const sz = @abs(inv_simd.col2[2]);
+        const max_scale = @max(@max(sx, sy), sz);
+        const t_max = best.distance * max_scale;
+
+        // *** BVH Intersection ***
+        // This is CRITICAL. Assume model.bvh.intersect now uses the
+        // rayTriangleIntersectSIMD from the previous example internally.
+        // std.debug.print("Checking Model: t_max={d}\n", .{t_max}); // Identify model if possible
+        const maybe_hit = model.bvh.intersect(ray_ms, 1e-4, t_max);
+        if (maybe_hit) |hit| { // hit.t is distance in model space
+            // std.debug.print("  -> BVH Hit! t = {d}\n", .{hit.t});
+            const splat_t: rlsimd.Vec4f = @splat(hit.t);
+            const hit_ms_simd = rlsimd.vec3ToVec4W(ray_ms.position, 1.0) + rlsimd.vec3ToVec4W(ray_ms.direction, 0.0) * splat_t;
+            const hit_ws_simd = rlsimd.transformSIMD(hit_ms_simd, transform_simd); // Use model's world transform SIMD matrix
+            // const hit_ws_vec3 = vec4ToVec3(hit_ws_simd);
+
+            // Compare hit point
+            // const original_hit_ms_vec3 = ray_ms.position.add(ray_ms.direction.scale(hit.t));
+            // const original_hit_ws_vec3 = rl.Vector3.transform(original_hit_ms_vec3, model.model.transform); // Use original rl.Matrix
+            // std.debug.print("  Hit WS Compare: SIMD={any}, Original={any}\n", .{ hit_ws_vec3, original_hit_ws_vec3 });
+
+            // Compare distance
+            const dist_ws = rlsimd.distanceSIMD(hit_ws_simd, ray_pos_ws_simd);
+            // const dist_ws_scalar_check = rl.Vector3.distance(hit_ws_vec3, ray_ws.position);
+            // std.debug.print("  Dist WS Compare: SIMD={d}, ScalarCheck={d}\n", .{ dist_ws, dist_ws_scalar_check });
+
+            // std.debug.print("  Final Check: dist_ws ({d}) < best.distance ({d}) ?\n", .{ dist_ws, best.distance });
+            if (dist_ws < best.distance) {
+                // std.debug.print("    -> New Best Hit!\n", .{});
+                // ... update best ...
+                best = .{
+                    .hit = true,
+                    .distance = dist_ws,
+                    .point = rlsimd.vec4ToVec3(hit_ws_simd), // Extract from SIMD vector
+                    .hit_class = model.class,
+                };
+            } else {
+                // std.debug.print("    -> Hit Rejected (dist >= best.distance)\n", .{});
+            }
+        } else {
+            // std.debug.print("  -> BVH Miss\n", .{});
+        }
+    }
+    return best;
 }
 
 fn closestHit(ray_ws: rl.Ray, models: []const s.Object, max_range: f32) HitResult {
@@ -89,20 +179,29 @@ pub fn raycastWorker(ctx: *const RaycastContext) void {
 
     var hits = &ctx.thread_hits.*; // no extra indirections
     var hit_ix = hits.items.len; // we guaranteed capacity
+    // Pre-calculate sensor SIMD transform matrix if it's constant for the worker
+    // const sensor_transform_simd = rlsimd.Mat4x4_SIMD.fromRlMatrix(ctx.sensor.local_to_world);
     for (ctx.start_index..ctx.end_index) |global_i| {
         const local_i = global_i - ctx.start_index;
 
-        const dir_local = ctx.sensor.dirs[global_i];
-        const dir_ws = rl.Vector3.transform(dir_local, ctx.sensor.local_to_world);
-        const dir = rl.Vector3.normalize(.{
-            .x = dir_ws.x + (rng.float(f32) - 0.5) * ctx.jitter_scale,
-            .y = dir_ws.y + (rng.float(f32) - 0.5) * ctx.jitter_scale,
-            .z = dir_ws.z,
-        });
+        const dir_local_simd = rlsimd.vec3ToVec4W(ctx.sensor.dirs[global_i], 0.0);
+        var dir_ws_simd = rlsimd.transformSIMD(dir_local_simd, ctx.sensor.local_to_world_simd);
+        // Add jitter (using SIMD)
+        // Create a jitter vector - Can potentially optimize random generation later
+        const jitter_vec = rlsimd.Vec4f{
+            (rng.float(f32) - 0.5) * ctx.jitter_scale,
+            (rng.float(f32) - 0.5) * ctx.jitter_scale,
+            0.0, // No jitter on Z as per original code
+            0.0, // W remains 0 for direction
+        };
+        dir_ws_simd += jitter_vec;
 
-        const ray = rl.Ray{ .position = ctx.sensor.pos, .direction = dir };
+        // Normalize the final direction
+        const dir_norm_simd = rlsimd.normalizeSIMD(dir_ws_simd);
 
-        const nearest = closestHit(ray, ctx.models, ctx.sensor.max_range);
+        const ray = rl.Ray{ .position = ctx.sensor.pos, .direction = rlsimd.vec4ToVec3(dir_norm_simd) };
+
+        const nearest = closestHitSIMD(ray, ctx.models, ctx.sensor.max_range);
         const contact = if (nearest.hit) nearest.point else rl.Vector3.zero();
 
         ctx.points_slice[local_i] = .{

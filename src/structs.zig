@@ -1,4 +1,5 @@
 const rl = @import("raylib");
+const rlsimd = @import("raylib_simd.zig");
 const std = @import("std");
 const bvh = @import("bvh.zig");
 
@@ -19,6 +20,8 @@ pub const Object = struct {
     bbox_ws: rl.BoundingBox,
     bvh: bvh.BVH,
     inv_transform: rl.Matrix, // cached
+    transform_simd: rlsimd.Mat4x4_SIMD,
+    inv_transform_simd: rlsimd.Mat4x4_SIMD,
 };
 
 pub const Simulation = struct {
@@ -54,6 +57,7 @@ pub const Sensor = struct {
 
     allocator: std.mem.Allocator,
     local_to_world: rl.Matrix,
+    local_to_world_simd: rlsimd.Mat4x4_SIMD,
 
     //--------------------------------------------------------------
     pub fn init(allocator: std.mem.Allocator, res_h: usize, res_v: usize, fov_h_deg: f32, fov_v_deg: f32) !Sensor {
@@ -67,6 +71,7 @@ pub const Sensor = struct {
             .points = &.{},
             .transforms = &.{},
             .local_to_world = rl.Matrix.identity(),
+            .local_to_world_simd = rlsimd.Mat4x4_SIMD.fromRlMatrix(rl.Matrix.identity()),
         };
         try self.allocateBuffers();
         self.precomputeDirs();
@@ -93,9 +98,12 @@ pub const Sensor = struct {
 
     /// Update `fwd`/`up` and build the 3×3 rotation matrix
     pub fn updateLocalAxes(self: *Sensor, fwd: rl.Vector3, up: rl.Vector3) void {
-        self.fwd = rl.Vector3.normalize(fwd);
-        self.up = rl.Vector3.normalize(up);
-        const right = rl.Vector3.normalize(rl.Vector3.crossProduct(self.up, self.fwd));
+        const fwd_simd = rlsimd.normalizeSIMD(rlsimd.vec3ToVec4W(fwd, 0.0));
+        const up_simd = rlsimd.normalizeSIMD(rlsimd.vec3ToVec4W(up, 0.0));
+        self.fwd = rlsimd.vec4ToVec3(fwd_simd);
+        self.up = rlsimd.vec4ToVec3(up_simd);
+        const right_simd = rlsimd.normalizeSIMD(rlsimd.crossSIMD(up_simd, fwd_simd));
+        const right = rlsimd.vec4ToVec3(right_simd);
         self.local_to_world = .{
             .m0 = right.x,
             .m1 = right.y,
@@ -114,6 +122,7 @@ pub const Sensor = struct {
             .m14 = 0,
             .m15 = 1,
         };
+        self.local_to_world_simd = rlsimd.Mat4x4_SIMD.fromRlMatrix(self.local_to_world);
     }
 
     //–––––––––––––––––––––––––––––––––––––––––––––––––––––––––––

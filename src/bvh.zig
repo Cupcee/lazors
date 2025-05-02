@@ -10,6 +10,7 @@
 
 const std = @import("std");
 const rl = @import("raylib");
+const rlsimd = @import("raylib_simd.zig");
 
 ///////////////////////////////////////////////////////////////////////////////
 // Basic types using rl.Vector3
@@ -219,7 +220,7 @@ pub const BVH = struct {
                 var k: u32 = 0;
                 while (k < node.count_or_right) : (k += 1) {
                     const prim_idx: u32 = node.start_or_left + k;
-                    if (rayTriangleIntersect(self.triangles[prim_idx], ray, t_min, closest)) |t_hit| {
+                    if (rayTriangleIntersectSIMD(self.triangles[prim_idx], ray, t_min, closest)) |t_hit| {
                         closest = t_hit;
                         best = Hit{ .t = t_hit, .prim_index = prim_idx, .u = 0, .v = 0 }; // u,v filled later if needed
                     }
@@ -245,7 +246,6 @@ pub const BVH = struct {
 ///////////////////////////////////////////////////////////////////////////////
 // Ray–triangle intersection (Möller‑Trumbore) — returns t, or null
 ///////////////////////////////////////////////////////////////////////////////
-
 fn rayTriangleIntersect(tri: Triangle, ray: rl.Ray, t_min: f32, t_max: f32) ?f32 {
     const eps: f32 = 1e-6;
     const e1 = tri.v1.subtract(tri.v0);
@@ -262,5 +262,76 @@ fn rayTriangleIntersect(tri: Triangle, ray: rl.Ray, t_min: f32, t_max: f32) ?f32
     if (v < 0.0 or u + v > 1.0) return null;
     const t_hit = e2.dotProduct(qvec) * inv_det;
     if (t_hit < t_min or t_hit > t_max) return null;
+    return t_hit;
+}
+
+/// Ray-Triangle intersection test using Möller–Trumbore algorithm with SIMD vectors.
+pub fn rayTriangleIntersectSIMD(tri: Triangle, ray: rl.Ray, t_min: f32, t_max: f32) ?f32 {
+    // Epsilon for floating point comparisons
+    const eps: f32 = 1e-6;
+    // const vec_eps: Vec4f = @splat(eps); // Epsilon broadcasted to vector
+
+    // Load triangle vertices and ray vectors into SIMD registers
+    const v0: rlsimd.Vec4f = rlsimd.vec3ToVec4W(tri.v0, 0.0);
+    const v1: rlsimd.Vec4f = rlsimd.vec3ToVec4W(tri.v1, 0.0);
+    const v2: rlsimd.Vec4f = rlsimd.vec3ToVec4W(tri.v2, 0.0);
+    const ray_pos: rlsimd.Vec4f = rlsimd.vec3ToVec4W(ray.position, 0.0);
+    const ray_dir: rlsimd.Vec4f = rlsimd.vec3ToVec4W(ray.direction, 0.0);
+
+    // Calculate edge vectors using SIMD subtraction
+    const e1: rlsimd.Vec4f = v1 - v0;
+    const e2: rlsimd.Vec4f = v2 - v0;
+
+    // Calculate determinant part 1: pvec = ray_dir x e2
+    const pvec: rlsimd.Vec4f = rlsimd.crossSIMD(ray_dir, e2);
+
+    // Calculate determinant: det = e1 ⋅ pvec
+    const det: f32 = rlsimd.dot3SIMD(e1, pvec);
+
+    // Check if ray is parallel to the triangle plane (or backfacing if culling)
+    // if (det > -eps and det < eps) return null; // Original scalar check
+    // Using SIMD comparison style (though result is scalar here)
+    if (@abs(det) < eps) {
+        return null;
+    }
+
+    const inv_det: f32 = 1.0 / det;
+    // const vec_inv_det: Vec4f = @splat(inv_det); // Broadcast for SIMD multiplication
+
+    // Calculate vector from ray origin to triangle vertex v0: tvec = ray_pos - v0
+    const tvec: rlsimd.Vec4f = ray_pos - v0;
+
+    // Calculate u parameter: u = (tvec ⋅ pvec) * inv_det
+    const u_num: f32 = rlsimd.dot3SIMD(tvec, pvec);
+    const u: f32 = u_num * inv_det;
+
+    // Check bounds for u: if (u < 0.0 or u > 1.0) return null;
+    // Note: SIMD isn't directly speeding up these scalar checks, but the preceding calculations.
+    if (u < 0.0 or u > 1.0) {
+        return null;
+    }
+
+    // Calculate v parameter part 1: qvec = tvec x e1
+    const qvec: rlsimd.Vec4f = rlsimd.crossSIMD(tvec, e1);
+
+    // Calculate v parameter: v = (ray_dir ⋅ qvec) * inv_det
+    const v_num: f32 = rlsimd.dot3SIMD(ray_dir, qvec);
+    const v: f32 = v_num * inv_det;
+
+    // Check bounds for v and u+v: if (v < 0.0 or u + v > 1.0) return null;
+    if (v < 0.0 or u + v > 1.0) {
+        return null;
+    }
+
+    // Calculate t (intersection distance): t = (e2 ⋅ qvec) * inv_det
+    const t_hit_num: f32 = rlsimd.dot3SIMD(e2, qvec);
+    const t_hit: f32 = t_hit_num * inv_det;
+
+    // Check if the intersection point is within the valid range [t_min, t_max]
+    if (t_hit < t_min or t_hit > t_max) {
+        return null;
+    }
+
+    // Intersection found
     return t_hit;
 }

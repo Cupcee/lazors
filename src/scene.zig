@@ -4,6 +4,8 @@ const rand = std.Random;
 const s = @import("structs.zig");
 const math = @import("math.zig");
 const bvh = @import("bvh.zig");
+const rc = @import("raycasting.zig");
+const rlsimd = @import("raylib_simd.zig");
 
 /// Build a BVH for a *single* raylib Mesh.
 /// The function copies the data so the BVH stays valid even if the Mesh is unloaded.
@@ -167,13 +169,17 @@ fn pushObject(
     mdl.transform = transform;
     const local_bb = rl.getMeshBoundingBox(mesh);
     const world_bb = math.transformBBox(local_bb, transform);
+
+    const inv_transform = rl.Matrix.invert(mdl.transform);
     const obj = s.Object{
         .model = mdl,
         .class = class,
         .color = color,
         .bbox_ws = world_bb,
         .bvh = mesh_bvh,
-        .inv_transform = rl.Matrix.invert(mdl.transform),
+        .inv_transform = inv_transform,
+        .transform_simd = rlsimd.Mat4x4_SIMD.fromRlMatrix(mdl.transform),
+        .inv_transform_simd = rlsimd.Mat4x4_SIMD.fromRlMatrix(inv_transform),
     };
     list.appendAssumeCapacity(obj);
 }
@@ -221,13 +227,16 @@ pub fn buildScene(object_count: usize, alloc: std.mem.Allocator) ![]const s.Obje
                 const world_bb = math.transformBBox(local_bb, mdl.transform);
                 const mesh_bvh = try buildBVHFromMeshes(alloc, mdl.meshes, @intCast(mdl.meshCount));
 
+                const inv_transform = rl.Matrix.invert(mdl.transform);
                 const obj = s.Object{
                     .model = mdl,
                     .class = 4,
                     .color = rl.Color.dark_gray,
                     .bbox_ws = world_bb,
                     .bvh = mesh_bvh,
-                    .inv_transform = rl.Matrix.invert(mdl.transform),
+                    .inv_transform = inv_transform,
+                    .transform_simd = rlsimd.Mat4x4_SIMD.fromRlMatrix(mdl.transform),
+                    .inv_transform_simd = rlsimd.Mat4x4_SIMD.fromRlMatrix(inv_transform),
                 };
                 list.appendAssumeCapacity(obj);
             },
