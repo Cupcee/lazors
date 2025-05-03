@@ -26,10 +26,12 @@ pub const Object = struct {
 
 pub const Simulation = struct {
     debug: bool = true,
-    num_objects: u32 = 75,
+    num_objects: u32 = 20,
     target_fps: i32 = 60,
-    class_count: u32 = 5,
-    collect: bool = false,
+    class_count: u32 = 6,
+    plane_half_size: f32 = 20.0,
+    collect: bool = true,
+    collect_wait_seconds: f32 = 0.1, // how long collector waits in seconds until next collection
 };
 
 //------------------------------------------------------------------

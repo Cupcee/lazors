@@ -39,7 +39,12 @@ pub fn main() !void {
     var camera, const camera_mode = sim.initCamera();
 
     // --- BUILD SCENE ---
-    const models = try scene.buildScene(simulation.num_objects, alloc);
+    const models = try scene.buildScene(
+        alloc,
+        simulation.num_objects,
+        simulation.class_count,
+        simulation.plane_half_size,
+    );
     defer for (models) |*m| {
         m.bvh.deinit();
         rl.unloadModel(m.*.model);
@@ -82,13 +87,10 @@ pub fn main() !void {
     };
 
     // --- INIT PCD EXPORTER / THREAD ---
-    var exporter: ?pcd.Exporter = null;
     var export_dt: f32 = 0.0;
     var dump_id: u32 = 0;
-    if (simulation.collect) {
-        exporter = try pcd.Exporter.create(alloc);
-        defer exporter.?.destroy();
-    }
+    var exporter = try pcd.Exporter.create(alloc);
+    defer exporter.destroy();
 
     // --- PREPARE MULTITHREADED RAYCASTING
     const num_threads = rc.getNumThreads();
@@ -132,8 +134,8 @@ pub fn main() !void {
         );
 
         if (simulation.collect) {
-            if (export_dt >= 1.0) {
-                try sim.exportPCD(&exporter.?, class_tx, class_counter, dump_id);
+            if (export_dt >= simulation.collect_wait_seconds) {
+                try sim.exportPCD(&exporter, class_tx, class_counter, dump_id);
                 dump_id += 1;
                 export_dt = 0.0;
             } else {

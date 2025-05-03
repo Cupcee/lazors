@@ -1,10 +1,8 @@
 const std = @import("std");
 const rl = @import("raylib"); // ziraylib package
 const s = @import("structs.zig");
-// const CLASS_COUNT = @import("raycasting.zig").CLASS_COUNT;
 const pcd = @import("pcd_exporter.zig");
-
-pub const INST_MAT_COLORS: [5]rl.Color = .{ rl.Color.black, rl.Color.red, rl.Color.green, rl.Color.yellow, rl.Color.blue };
+pub const INST_MAT_COLORS: [6]rl.Color = .{ rl.Color.black, rl.Color.red, rl.Color.green, rl.Color.yellow, rl.Color.blue, rl.Color.magenta };
 
 pub fn sensorDt(sensor: *s.Sensor, dt: f32, debug: *bool) void {
     if (rl.isKeyDown(rl.KeyboardKey.right)) sensor.pos.x -= sensor.velocity * dt;
@@ -144,6 +142,6 @@ pub fn exportPCD(
     dump_id: u32,
 ) !void {
     var name_buf: [64]u8 = undefined; // buffer for PCD filenames...
-    const fname = try std.fmt.bufPrint(&name_buf, "frames/scan_{d}.pcd", .{dump_id});
+    const fname = try std.fmt.bufPrint(&name_buf, "frames/scan_{d:0>7}.pcd", .{dump_id});
     try exporter.dump(fname, class_tx, class_counter);
 }

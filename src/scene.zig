@@ -183,7 +183,7 @@ fn pushObject(
     list.appendAssumeCapacity(obj);
 }
 
-pub fn buildScene(object_count: usize, alloc: std.mem.Allocator) ![]const s.Object {
+pub fn buildScene(alloc: std.mem.Allocator, object_count: usize, num_classes: usize, plane_half_size: f32) ![]const s.Object {
     // Pre-allocate for all dynamic objects + 1 ground plane
     var list = try std.ArrayList(s.Object).initCapacity(alloc, object_count + 1);
     errdefer {
@@ -193,13 +193,13 @@ pub fn buildScene(object_count: usize, alloc: std.mem.Allocator) ![]const s.Obje
 
     var prng = rand.DefaultPrng.init(@intCast(std.time.nanoTimestamp()));
     const rng = prng.random();
-    const plane_half_size: f32 = 40.0;
 
     for (0..object_count) |i| {
-        const kind = i % 4; // ← now four kinds
+        const kind = i % (num_classes - 1); // ← now four kinds
         const x = (rng.float(f32) * (plane_half_size * 2.0)) - plane_half_size;
         const z = rng.float(f32) * (plane_half_size * 2.0);
         const y = rng.float(f32) * 3.0;
+
         const transform = rl.Matrix.translate(x, y, z);
 
         switch (kind) {
@@ -216,9 +216,33 @@ pub fn buildScene(object_count: usize, alloc: std.mem.Allocator) ![]const s.Obje
                 try pushObject(mesh, 3, rl.Color.dark_gray, transform, &list, alloc);
             },
             3 => {
-                var mdl = try rl.loadModel("resources/objects/scene.gltf");
+                var mdl = try rl.loadModel("resources/objects/grandpa/scene.gltf");
                 // build a scale matrix
                 const scale = 0.01;
+                const scale_trans = rl.Matrix.scale(scale, scale, scale);
+                const deg2rad: f32 = 0.0174532925;
+                mdl.transform = rl.Matrix.multiply(rl.Matrix.rotateX(deg2rad * 90), rl.Matrix.multiply(scale_trans, transform));
+
+                const local_bb = getMeshesBoundingBoxPtr(mdl.meshes, @intCast(mdl.meshCount));
+                const world_bb = math.transformBBox(local_bb, mdl.transform);
+                const mesh_bvh = try buildBVHFromMeshes(alloc, mdl.meshes, @intCast(mdl.meshCount));
+
+                const inv_transform = rl.Matrix.invert(mdl.transform);
+                const obj = s.Object{
+                    .model = mdl,
+                    .class = 4,
+                    .color = rl.Color.dark_gray,
+                    .bbox_ws = world_bb,
+                    .bvh = mesh_bvh,
+                    .transform_simd = rlsimd.Mat4x4_SIMD.fromRlMatrix(mdl.transform),
+                    .inv_transform_simd = rlsimd.Mat4x4_SIMD.fromRlMatrix(inv_transform),
+                };
+                list.appendAssumeCapacity(obj);
+            },
+            4 => {
+                var mdl = try rl.loadModel("resources/objects/godzilla/scene.gltf");
+                // build a scale matrix
+                const scale = 1.0;
                 const scale_trans = rl.Matrix.scale(scale, scale, scale);
                 mdl.transform = rl.Matrix.multiply(scale_trans, transform);
 
@@ -229,7 +253,7 @@ pub fn buildScene(object_count: usize, alloc: std.mem.Allocator) ![]const s.Obje
                 const inv_transform = rl.Matrix.invert(mdl.transform);
                 const obj = s.Object{
                     .model = mdl,
-                    .class = 4,
+                    .class = 5,
                     .color = rl.Color.dark_gray,
                     .bbox_ws = world_bb,
                     .bvh = mesh_bvh,
