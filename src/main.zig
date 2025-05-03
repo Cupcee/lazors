@@ -61,8 +61,14 @@ pub fn main() !void {
         class.* = 0;
     }
     const inst_mats = try sim.initInstanceMats(alloc, @intCast(simulation.class_count));
-    const class_tx = try sim.initClassTxs(alloc, max_points, @intCast(simulation.class_count));
-    defer for (class_tx) |buf| alloc.free(buf);
+    // const class_tx = try sim.initClassTxs(alloc, max_points, @intCast(simulation.class_count));
+    // defer for (class_tx) |buf| alloc.free(buf);
+    const class_tx = try sim.initClassTxLists(
+        alloc,
+        @intCast(simulation.class_count),
+        max_points / simulation.class_count + 32,
+    );
+    defer for (class_tx) |*list| list.deinit();
 
     // --- SETUP PCD WRITING ---
     const output_dir = "frames";
@@ -76,10 +82,13 @@ pub fn main() !void {
     };
 
     // --- INIT PCD EXPORTER / THREAD ---
-    var exporter = try pcd.Exporter.create(alloc);
-    defer exporter.destroy();
+    var exporter: ?pcd.Exporter = null;
     var export_dt: f32 = 0.0;
     var dump_id: u32 = 0;
+    if (simulation.collect) {
+        exporter = try pcd.Exporter.create(alloc);
+        defer exporter.?.destroy();
+    }
 
     // --- PREPARE MULTITHREADED RAYCASTING
     const num_threads = rc.getNumThreads();
@@ -96,6 +105,8 @@ pub fn main() !void {
 
         const dt = rl.getFrameTime();
         sim.sensorDt(&sensor, dt, &simulation.debug);
+
+        for (class_tx) |*dst| dst.clearRetainingCapacity();
 
         // 1. Build the contexts for this frame’s ray-casts
         rc.prepareRaycastContexts(
@@ -120,12 +131,14 @@ pub fn main() !void {
             class_counter,
         );
 
-        if (export_dt >= 1.0) {
-            try sim.exportPCD(&exporter, class_tx, class_counter, dump_id);
-            dump_id += 1;
-            export_dt = 0.0;
-        } else {
-            export_dt += dt;
+        if (simulation.collect) {
+            if (export_dt >= 1.0) {
+                try sim.exportPCD(&exporter.?, class_tx, class_counter, dump_id);
+                dump_id += 1;
+                export_dt = 0.0;
+            } else {
+                export_dt += dt;
+            }
         }
 
         rl.beginDrawing();

@@ -193,7 +193,7 @@ pub fn buildScene(object_count: usize, alloc: std.mem.Allocator) ![]const s.Obje
 
     var prng = rand.DefaultPrng.init(@intCast(std.time.nanoTimestamp()));
     const rng = prng.random();
-    const plane_half_size: f32 = 25.0;
+    const plane_half_size: f32 = 40.0;
 
     for (0..object_count) |i| {
         const kind = i % 4; // ← now four kinds

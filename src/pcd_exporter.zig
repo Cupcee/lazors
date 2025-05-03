@@ -53,7 +53,7 @@ pub const Exporter = struct {
     pub fn dump(
         self: *Exporter,
         path: []const u8,
-        class_tx: [][]rl.Matrix,
+        class_tx: []std.ArrayList(rl.Matrix),
         class_counter: []usize,
     ) !void {
         // 1. Gather the points
@@ -129,7 +129,7 @@ fn workerMain(alloc: std.mem.Allocator, shared: *Shared) !void {
 // -----------------------------------------------------------------------------
 fn collectPoints(
     alloc: std.mem.Allocator,
-    class_tx: [][]rl.Matrix,
+    class_tx: []std.ArrayList(rl.Matrix),
     class_counter: []usize,
 ) ![]Point {
     var total: usize = 0;
@@ -139,7 +139,7 @@ fn collectPoints(
 
     var i: usize = 0;
     for (0..class_counter.len) |cls| {
-        for (class_tx[cls][0..class_counter[cls]]) |m| {
+        for (class_tx[cls].items[0..class_counter[cls]]) |m| {
             buf[i] = .{
                 .x = m.m12,
                 .y = m.m13,

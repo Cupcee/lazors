@@ -49,12 +49,16 @@ pub fn initInstanceMats(alloc: std.mem.Allocator, num_classes: usize) ![]rl.Mate
     return inst_mats;
 }
 
-pub fn initClassTxs(alloc: std.mem.Allocator, max_points: usize, num_classes: usize) ![][]rl.Matrix {
-    const class_txs: [][]rl.Matrix = try alloc.alloc([]rl.Matrix, num_classes);
-    for (class_txs) |*slot| {
-        slot.* = try alloc.alloc(rl.Matrix, max_points);
+pub fn initClassTxLists(
+    alloc: std.mem.Allocator,
+    num_classes: usize,
+    reserve: usize,
+) ![]std.ArrayList(rl.Matrix) {
+    const lists = try alloc.alloc(std.ArrayList(rl.Matrix), num_classes);
+    for (lists) |*l| {
+        l.* = try std.ArrayList(rl.Matrix).initCapacity(alloc, reserve);
     }
-    return class_txs;
+    return lists;
 }
 
 pub fn initCamera() struct { rl.Camera, rl.CameraMode } {
@@ -110,7 +114,7 @@ pub fn draw3D(
     models: []const s.Object,
     collision_mesh: rl.Mesh,
     inst_mats: []rl.Material,
-    class_tx: [][]rl.Matrix,
+    class_tx: []std.ArrayList(rl.Matrix),
     class_counter: []usize,
     sensor: *s.Sensor,
     simulation: *s.Simulation,
@@ -126,7 +130,7 @@ pub fn draw3D(
                 rl.drawMeshInstanced(
                     collision_mesh,
                     inst_mats[cls],
-                    class_tx[cls][0..class_counter[cls]],
+                    class_tx[cls].items,
                 );
             }
         }
@@ -135,7 +139,7 @@ pub fn draw3D(
 
 pub fn exportPCD(
     exporter: *pcd.Exporter,
-    class_tx: [][]rl.Matrix,
+    class_tx: []std.ArrayList(rl.Matrix),
     class_counter: []usize,
     dump_id: u32,
 ) !void {

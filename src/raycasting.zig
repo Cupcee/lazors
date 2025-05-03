@@ -151,7 +151,8 @@ pub fn raycastWorker(ctx: *const RaycastContext) void {
     const rng = ctx.thread_prng.random();
 
     var hits = &ctx.thread_hits.*; // no extra indirections
-    var hit_ix = hits.items.len; // we guaranteed capacity
+    var ptr = hits.items.ptr;
+    var hit_count: usize = 0;
     // Pre-calculate sensor SIMD transform matrix if it's constant for the worker
     // const sensor_transform_simd = rlsimd.Mat4x4_SIMD.fromRlMatrix(ctx.sensor.local_to_world);
     for (ctx.start_index..ctx.end_index) |global_i| {
@@ -185,11 +186,11 @@ pub fn raycastWorker(ctx: *const RaycastContext) void {
 
         if (nearest.hit) {
             const transform = rl.Matrix.translate(contact[0], contact[1], contact[2]);
-            hits.items[hit_ix] = .{ .hit_class = nearest.hit_class, .transform = transform };
-            hit_ix += 1;
+            ptr[hit_count] = .{ .hit_class = nearest.hit_class, .transform = transform };
+            hit_count += 1;
         }
     }
-    hits.items.len = hit_ix;
+    hits.items.len = hit_count;
 }
 
 /// Slice‐by-slice preparation of the contexts that each worker thread
@@ -239,29 +240,30 @@ pub fn prepareRaycastContexts(
     }
 }
 
-/// Merge per-thread hit‐lists into the per-class instance matrices and
-/// return the total number of hits.
 pub fn mergeThreadHits(
     thread_hit_lists: []const std.ArrayList(ThreadHit),
-    class_tx: [][]rl.Matrix,
+    class_tx: []std.ArrayList(rl.Matrix),
     class_counter: []usize,
 ) usize {
+    for (class_tx) |*dst| dst.clearRetainingCapacity();
     @memset(class_counter, 0);
-
     var total: usize = 0;
+
     for (thread_hit_lists) |list| {
         total += list.items.len;
         for (list.items) |hit| {
             const cls: usize = @intCast(hit.hit_class);
-            if (cls < class_counter.len) {
-                const idx = class_counter[cls];
-                class_tx[cls][idx] = hit.transform;
-                class_counter[cls] += 1;
-            } else {
-                std.log.warn("Hit with invalid class ID {} encountered.", .{cls});
-            }
+            if (cls >= class_tx.len) continue;
+
+            var dst = &class_tx[cls];
+            if (dst.items.len == dst.capacity) // grow rarely
+                dst.ensureTotalCapacityPrecise(dst.capacity * 2) catch unreachable;
+            dst.appendAssumeCapacity(hit.transform);
         }
     }
+
+    // write counters for the UI
+    for (class_counter, 0..) |*c, i| c.* = class_tx[i].items.len;
     return total;
 }
 

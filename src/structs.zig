@@ -26,9 +26,10 @@ pub const Object = struct {
 
 pub const Simulation = struct {
     debug: bool = true,
-    num_objects: u32 = 50,
+    num_objects: u32 = 75,
     target_fps: i32 = 60,
     class_count: u32 = 5,
+    collect: bool = false,
 };
 
 //------------------------------------------------------------------
@@ -82,18 +83,6 @@ pub const Sensor = struct {
         self.allocator.free(self.dirs);
         self.allocator.free(self.points);
         // self.allocator.free(self.transforms);
-    }
-
-    /// Change the grid size on the fly (buffers are re-created).
-    pub fn setResolution(self: *Sensor, w: usize, h: usize) !void {
-        if (w == self.res_h and h == self.res_v) return;
-        self.allocator.free(self.dirs);
-        self.allocator.free(self.points);
-        // self.allocator.free(self.transforms);
-        self.res_h = w;
-        self.res_v = h;
-        try self.allocateBuffers();
-        self.precomputeDirs();
     }
 
     /// Update `fwd`/`up` and build the 3×3 rotation matrix
