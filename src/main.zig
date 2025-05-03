@@ -11,6 +11,7 @@ const s = @import("structs.zig");
 const rc = @import("raycasting.zig");
 const tp = @import("thread_pool.zig");
 const scene = @import("scene.zig");
+const pcd = @import("pcd_exporter.zig");
 const CLASS_COUNT = rc.CLASS_COUNT;
 const WINDOW_WIDTH = 1240;
 const WINDOW_HEIGHT = 800;
@@ -189,6 +190,11 @@ pub fn main() !void {
     var class_tx = try initClassTxs(alloc, max_points);
     defer for (class_tx) |buf| alloc.free(buf);
 
+    var exporter = try pcd.Exporter.create(alloc);
+    defer exporter.destroy();
+    var dump_id: u32 = 0;
+    var name_buf: [64]u8 = undefined;
+
     // prepare multithreading for raycasting
     const num_threads = rc.getNumThreads();
     var thread_resources = try rc.ThreadResources.init(alloc, num_threads, max_points);
@@ -226,6 +232,15 @@ pub fn main() !void {
             &class_tx,
             &class_counter,
         );
+
+        if (rl.isKeyReleased(rl.KeyboardKey.p)) { // hit P to dump a frame
+            const fname = std.fmt.bufPrint(&name_buf, "scan_{d}.pcd", .{dump_id}) catch unreachable;
+
+            exporter.dump(fname, &class_tx, &class_counter) catch |e|
+                std.log.err("queueing PCD dump failed: {}", .{e});
+
+            dump_id += 1;
+        }
 
         rl.beginDrawing();
         defer rl.endDrawing();
