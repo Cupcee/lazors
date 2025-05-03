@@ -1,2 +1,4 @@
+frames/
+resources/
 .zig-cache/
 zig-out/
