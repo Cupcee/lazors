@@ -11,6 +11,7 @@ const tp = @import("thread_pool.zig");
 const scene = @import("scene.zig");
 const pcd = @import("pcd_exporter.zig");
 const sim = @import("simulation.zig");
+const clap = @import("clap");
 const WINDOW_WIDTH = 1240;
 const WINDOW_HEIGHT = 800;
 const JITTER_SCALE = 0.002;
@@ -29,8 +30,37 @@ pub fn main() !void {
     defer if (is_debug) {
         _ = debug_allocator.deinit();
     };
+    const params = comptime clap.parseParamsComptime(
+        \\-h, --help                   Display this help and exit.
+        \\-n, --num_objects <u32>      Number of objects in simulation.
+        \\-t, --target_fps <i32>       Number of objects in simulation.
+        \\-d, --plane_half_size <f32>      Size of the ground plane divided by two.
+        \\--collect
+        \\--collect_wait_seconds <f32> How many seconds to wait between collections.         
+    );
+    var diag = clap.Diagnostic{};
+    var _args = clap.parse(clap.Help, &params, clap.parsers.default, .{
+        .diagnostic = &diag,
+        .allocator = alloc,
+        .assignment_separators = "=:",
+    }) catch |err| {
+        // Report useful error and exit.
+        diag.report(std.io.getStdErr().writer(), err) catch {};
+        return err;
+    };
+    defer _args.deinit();
+    const args = _args.args;
+    // `clap.usage` is a function that can print a simple help message. It can print any `Param`
+    // where `Id` has a `value` method (`Param(Help)` is one such parameter).
+    if (args.help != 0) return clap.help(std.io.getStdErr().writer(), clap.Help, &params, .{});
 
-    var simulation = s.Simulation{};
+    var simulation = s.Simulation{
+        .num_objects = args.num_objects orelse 5,
+        .target_fps = args.target_fps orelse 60,
+        .plane_half_size = args.plane_half_size orelse 10.0,
+        .collect = if (args.collect != 0) true else false,
+        .collect_wait_seconds = args.collect_wait_seconds orelse 1.0,
+    };
 
     // --- DRAW WINDOW ---
     rl.initWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "lazors");
