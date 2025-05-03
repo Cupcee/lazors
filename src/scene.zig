@@ -19,6 +19,7 @@ pub fn buildBVHFromMesh(alloc: std.mem.Allocator, mesh: rl.Mesh) !bvh.BVH {
         @as([*]const f32, @ptrCast(mesh.vertices))[0 .. vcount * 3];
 
     var verts = try alloc.alloc(rl.Vector3, vcount);
+    defer alloc.free(verts);
     var i: usize = 0;
     while (i < vcount) : (i += 1) {
         verts[i] = rl.Vector3{
@@ -31,6 +32,7 @@ pub fn buildBVHFromMesh(alloc: std.mem.Allocator, mesh: rl.Mesh) !bvh.BVH {
     // ---- indices -----------------------------------------------------------
     const icount: u32 = @intCast(mesh.triangleCount * 3);
     var indices = try alloc.alloc(u32, icount);
+    defer alloc.free(indices);
 
     if (mesh.indices != null) {
         const src = @as([*]const u16, @ptrCast(mesh.indices))[0..icount];
@@ -77,7 +79,9 @@ pub fn buildBVHFromMeshes(
     // 2) Allocate flat buffers
     // ────────────────────────────────────────────────
     var verts = try alloc.alloc(rl.Vector3, total_verts);
+    defer alloc.free(verts);
     var indices = try alloc.alloc(u32, total_indices);
+    defer alloc.free(indices);
 
     // ────────────────────────────────────────────────
     // 3) Copy vertices + (offset) indices mesh by mesh

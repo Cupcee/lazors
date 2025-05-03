@@ -1,22 +1,16 @@
-// ----------------------------------------------------
-// tiny LiDAR simulator using Raylib bindings for Zig
-// ----------------------------------------------------
+//! ----------------------------------------------------
+//! tiny LiDAR simulator using Raylib bindings for Zig
+//! ----------------------------------------------------
 
 const std = @import("std");
 const builtin = @import("builtin");
-const rl = @import("raylib"); // ziraylib package
-const s = @import("structs.zig");
-const rc = @import("raycasting.zig");
-const tp = @import("thread_pool.zig");
-const scene = @import("scene.zig");
-const pcd = @import("pcd_exporter.zig");
-const sim = @import("simulation.zig");
+const rl = @import("raylib");
 const clap = @import("clap");
-const WINDOW_WIDTH = 1240;
-const WINDOW_HEIGHT = 800;
-const JITTER_SCALE = 0.002;
 
-const RayPool = tp.ThreadPool(rc.RaycastContext, rc.raycastWorker);
+const structs = @import("structs.zig");
+const rc = @import("raycasting.zig");
+const sim = @import("simulation.zig");
+const state = @import("state.zig");
 
 var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
 
@@ -54,118 +48,59 @@ pub fn main() !void {
     // where `Id` has a `value` method (`Param(Help)` is one such parameter).
     if (args.help != 0) return clap.help(std.io.getStdErr().writer(), clap.Help, &params, .{});
 
-    var simulation = s.Simulation{
-        .num_objects = args.num_objects orelse 5,
+    var simulation = structs.Simulation{
+        .num_objects = args.num_objects orelse 3,
         .target_fps = args.target_fps orelse 60,
-        .plane_half_size = args.plane_half_size orelse 10.0,
+        .plane_half_size = args.plane_half_size orelse 7.5,
         .collect = if (args.collect != 0) true else false,
         .collect_wait_seconds = args.collect_wait_seconds orelse 1.0,
     };
 
-    // --- DRAW WINDOW ---
-    rl.initWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "lazors");
-    rl.disableCursor();
-    rl.setTargetFPS(simulation.target_fps);
-    var camera, const camera_mode = sim.initCamera();
+    var ctx = try state.State.init(alloc, &simulation);
+    // have to start workers here so they receive correct address for ctx
+    try ctx.pool.startWorkers();
+    // below clears the whole simulation context
+    defer ctx.deinit(alloc);
 
-    // --- BUILD SCENE ---
-    const models = try scene.buildScene(
-        alloc,
-        simulation.num_objects,
-        simulation.class_count,
-        simulation.plane_half_size,
-    );
-    defer for (models) |*m| {
-        m.bvh.deinit();
-        rl.unloadModel(m.*.model);
-    };
-
-    // --- INIT SENSOR ---
-    var sensor = try s.Sensor.init(alloc, 800, 192, 360, 70);
-    defer sensor.deinit();
-    sensor.updateLocalAxes(sensor.fwd, sensor.up);
-    const max_points = sensor.res_h * sensor.res_v;
-
-    // --- COLLISION DRAWING ---
-    var collision_mesh = rl.genMeshCube(0.02, 0.02, 0.02);
-    rl.uploadMesh(&collision_mesh, false); // loads mesh to GPU for instancing
-    defer rl.unloadMesh(collision_mesh);
-    const class_counter: []usize = try alloc.alloc(usize, simulation.class_count);
-    defer alloc.free(class_counter);
-    for (class_counter) |*class| {
-        class.* = 0;
-    }
-    const inst_mats = try sim.initInstanceMats(alloc, @intCast(simulation.class_count));
-    // const class_tx = try sim.initClassTxs(alloc, max_points, @intCast(simulation.class_count));
-    // defer for (class_tx) |buf| alloc.free(buf);
-    const class_tx = try sim.initClassTxLists(
-        alloc,
-        @intCast(simulation.class_count),
-        max_points / simulation.class_count + 32,
-    );
-    defer for (class_tx) |*list| list.deinit();
-
-    // --- SETUP PCD WRITING ---
-    const output_dir = "frames";
-    std.fs.Dir.makeDir(std.fs.cwd(), output_dir) catch |e| {
-        switch (e) {
-            error.PathAlreadyExists => {
-                std.log.info("Writing to existing directory '{d}'", .{output_dir});
-            },
-            else => return e,
-        }
-    };
-
-    // --- INIT PCD EXPORTER / THREAD ---
+    // (keep these for the exporter timing)
     var export_dt: f32 = 0.0;
     var dump_id: u32 = 0;
-    var exporter = try pcd.Exporter.create(alloc);
-    defer exporter.destroy();
-
-    // --- PREPARE MULTITHREADED RAYCASTING
-    const num_threads = rc.getNumThreads();
-    var thread_resources = try rc.ThreadResources.init(alloc, num_threads, max_points);
-    defer thread_resources.deinit(alloc);
-    const thread_ctx = try alloc.alloc(rc.RaycastContext, num_threads);
-    var pool = try RayPool.init(alloc, num_threads, thread_ctx);
-    defer pool.deinit(alloc);
-    try pool.startWorkers();
 
     // --- SIMULATION LOOP ---
     while (!rl.windowShouldClose()) {
-        rl.updateCamera(&camera, camera_mode);
+        rl.updateCamera(&ctx.camera, ctx.camera_mode);
 
         const dt = rl.getFrameTime();
-        sim.sensorDt(&sensor, dt, &simulation.debug);
+        sim.sensorDt(&ctx.sensor, dt, &simulation.debug);
 
-        for (class_tx) |*dst| dst.clearRetainingCapacity();
+        for (ctx.class_tx) |*dst| dst.clearRetainingCapacity();
 
         // 1. Build the contexts for this frame’s ray-casts
         rc.prepareRaycastContexts(
-            thread_ctx,
-            &sensor,
-            models,
-            JITTER_SCALE,
-            thread_resources.prngs,
-            thread_resources.hits,
-            max_points,
+            ctx.thread_ctx,
+            &ctx.sensor,
+            ctx.models,
+            state.JITTER,
+            ctx.thread_res.prngs,
+            ctx.thread_res.hits,
+            ctx.max_points,
         );
 
         // 2. let the pool run them
-        const n_jobs = pool.contexts.len;
-        pool.dispatch(n_jobs);
-        pool.wait(); // blocks until all rays done
+        const n_jobs = ctx.pool.contexts.len;
+        ctx.pool.dispatch(n_jobs);
+        ctx.pool.wait(); // blocks until all rays done
 
         // 3. Merge results
         const total_hit_count = rc.mergeThreadHits(
-            thread_resources.hits,
-            class_tx,
-            class_counter,
+            ctx.thread_res.hits,
+            ctx.class_tx,
+            ctx.class_counter,
         );
 
         if (simulation.collect) {
             if (export_dt >= simulation.collect_wait_seconds) {
-                try sim.exportPCD(&exporter, class_tx, class_counter, dump_id);
+                try sim.exportPCD(&ctx.exporter, ctx.class_tx, ctx.class_counter, dump_id);
                 dump_id += 1;
                 export_dt = 0.0;
             } else {
@@ -179,14 +114,12 @@ pub fn main() !void {
 
         // 3D drawing block
         {
-            rl.beginMode3D(camera);
+            rl.beginMode3D(ctx.camera);
             defer rl.endMode3D();
 
-            sim.draw3D(models, collision_mesh, inst_mats, class_tx, class_counter, &sensor, &simulation);
+            sim.draw3D(ctx.models, ctx.collision, ctx.inst_mats, ctx.class_tx, ctx.class_counter, &ctx.sensor, &simulation);
         }
 
-        sim.drawGUI(&simulation, class_counter, total_hit_count);
+        sim.drawGUI(&simulation, ctx.class_counter, total_hit_count);
     }
-
-    rl.closeWindow();
 }
