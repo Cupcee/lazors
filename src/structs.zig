@@ -28,6 +28,7 @@ pub const Simulation = struct {
     debug: bool = true,
     num_objects: u32 = 50,
     target_fps: i32 = 60,
+    class_count: u32 = 5,
 };
 
 //------------------------------------------------------------------

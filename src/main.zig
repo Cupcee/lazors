@@ -3,16 +3,14 @@
 // ----------------------------------------------------
 
 const std = @import("std");
-const Thread = std.Thread;
 const builtin = @import("builtin");
-const rand = std.Random;
 const rl = @import("raylib"); // ziraylib package
 const s = @import("structs.zig");
 const rc = @import("raycasting.zig");
 const tp = @import("thread_pool.zig");
 const scene = @import("scene.zig");
 const pcd = @import("pcd_exporter.zig");
-const CLASS_COUNT = rc.CLASS_COUNT;
+const sim = @import("simulation.zig");
 const WINDOW_WIDTH = 1240;
 const WINDOW_HEIGHT = 800;
 const JITTER_SCALE = 0.002;
@@ -20,132 +18,6 @@ const JITTER_SCALE = 0.002;
 const RayPool = tp.ThreadPool(rc.RaycastContext, rc.raycastWorker);
 
 var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
-
-fn sensorDt(sensor: *s.Sensor, dt: f32, debug: *bool) void {
-    if (rl.isKeyDown(rl.KeyboardKey.right)) sensor.pos.x -= sensor.velocity * dt;
-    if (rl.isKeyDown(rl.KeyboardKey.left)) sensor.pos.x += sensor.velocity * dt;
-    if (rl.isKeyDown(rl.KeyboardKey.up)) sensor.pos.z += sensor.velocity * dt;
-    if (rl.isKeyDown(rl.KeyboardKey.down)) sensor.pos.z -= sensor.velocity * dt;
-    if (rl.isKeyDown(rl.KeyboardKey.k)) sensor.pos.y += sensor.velocity * dt;
-    if (rl.isKeyDown(rl.KeyboardKey.j)) sensor.pos.y -= sensor.velocity * dt;
-    if (rl.isKeyDown(rl.KeyboardKey.h)) sensor.yaw += sensor.turn_speed * dt;
-    if (rl.isKeyDown(rl.KeyboardKey.l)) sensor.yaw -= sensor.turn_speed * dt;
-    if (rl.isKeyReleased(rl.KeyboardKey.tab)) debug.* = !debug.*;
-
-    const half_pi: f32 = std.math.pi / 2.0 - 0.001;
-    sensor.pitch = std.math.clamp(sensor.pitch, -half_pi, half_pi);
-
-    sensor.fwd = .{
-        @sin(sensor.yaw) * @cos(sensor.pitch),
-        @sin(sensor.pitch),
-        @cos(sensor.yaw) * @cos(sensor.pitch),
-        0,
-    };
-    sensor.up = .{ 0, 1, 0, 0 };
-    sensor.updateLocalAxes(sensor.fwd, sensor.up);
-}
-
-fn initInstanceMats() !struct { [CLASS_COUNT]rl.Material, [CLASS_COUNT]rl.Color } {
-    const vs_path = "resources/shaders/glsl330/lighting_instancing_unlit.vs";
-    const fs_path = "resources/shaders/glsl330/lighting_unlit.fs";
-    const inst_shader = try rl.loadShader(vs_path, fs_path);
-    inst_shader.locs[@intFromEnum(rl.ShaderLocationIndex.matrix_model)] =
-        rl.getShaderLocation(inst_shader, "instanceTransform");
-
-    const inst_mat_colors: [CLASS_COUNT]rl.Color = .{ rl.Color.black, rl.Color.red, rl.Color.green, rl.Color.yellow, rl.Color.blue };
-    var inst_mats: [CLASS_COUNT]rl.Material = undefined;
-    for (&inst_mats, 0..) |*m, i| {
-        m.* = try rl.loadMaterialDefault();
-        m.*.shader = inst_shader;
-        m.*.maps[@intFromEnum(rl.MATERIAL_MAP_DIFFUSE)].color = inst_mat_colors[i];
-    }
-    return .{ inst_mats, inst_mat_colors };
-}
-
-fn initClassTxs(alloc: std.mem.Allocator, max_points: usize) ![CLASS_COUNT][]rl.Matrix {
-    var class_txs: [CLASS_COUNT][]rl.Matrix = undefined;
-    for (&class_txs) |*slot| {
-        slot.* = try alloc.alloc(rl.Matrix, max_points);
-    }
-    return class_txs;
-}
-
-fn initCamera() struct { rl.Camera, rl.CameraMode } {
-    const camera = rl.Camera3D{
-        .position = .{ .x = 0, .y = 2, .z = -8 },
-        .target = .{ .x = 0, .y = 2, .z = 0 },
-        .up = .{ .x = 0, .y = 1, .z = 0 },
-        .fovy = 60,
-        .projection = rl.CameraProjection.perspective,
-    };
-    const camera_mode = rl.CameraMode.free;
-    return .{ camera, camera_mode };
-}
-
-fn drawGUI(
-    simulation: *s.Simulation,
-    class_counter: *[CLASS_COUNT]usize,
-    total_hit_count: usize,
-    inst_mat_colors: *const [CLASS_COUNT]rl.Color,
-) void {
-    rl.drawFPS(10, 10);
-    rl.drawText(
-        "Camera: WASD, Left-CTRL, Space. Sensor: arrow keys, HJKL. TAB: Toggle Points",
-        10,
-        30,
-        20,
-        rl.Color.dark_gray,
-    );
-    if (simulation.debug) {
-        rl.drawText(
-            rl.textFormat("Total hitCount: %04i", .{total_hit_count}),
-            10,
-            50,
-            20,
-            rl.Color.dark_gray,
-        );
-        for (class_counter, 0..) |count, index| {
-            const _c: i32 = @intCast(count);
-            const _i: i32 = @intCast(index);
-            rl.drawText(
-                rl.textFormat("[class %i]: %i", .{ _i, _c }),
-                10,
-                70 + (_i * 20),
-                20,
-                inst_mat_colors[index],
-            );
-        }
-    } else {
-        rl.drawText("Hit points hidden (Press TAB)", 10, 50, 20, rl.Color.dark_gray);
-    }
-}
-
-fn draw3D(
-    models: []const s.Object,
-    collision_mesh: rl.Mesh,
-    inst_mats: *const [CLASS_COUNT]rl.Material,
-    class_tx: *const [CLASS_COUNT][]rl.Matrix,
-    class_counter: *[CLASS_COUNT]usize,
-    sensor: *s.Sensor,
-    simulation: *s.Simulation,
-) void {
-    for (models) |model| {
-        rl.drawModel(model.model, rl.Vector3.zero(), 1, model.color);
-    }
-    rl.drawSphere(sensor.pos, 0.07, rl.Color.black);
-
-    if (simulation.debug) {
-        for (0..CLASS_COUNT) |cls| {
-            if (class_counter[cls] > 0) {
-                rl.drawMeshInstanced(
-                    collision_mesh,
-                    inst_mats[cls],
-                    class_tx[cls][0..class_counter[cls]],
-                );
-            }
-        }
-    }
-}
 
 pub fn main() !void {
     const alloc, const is_debug = alloc: {
@@ -158,44 +30,58 @@ pub fn main() !void {
         _ = debug_allocator.deinit();
     };
 
-    // simulation init
     var simulation = s.Simulation{};
+
+    // --- DRAW WINDOW ---
     rl.initWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "lazors");
     rl.disableCursor();
     rl.setTargetFPS(simulation.target_fps);
+    var camera, const camera_mode = sim.initCamera();
 
-    // 3D camera init
-    var camera, const camera_mode = initCamera();
-
-    // 3D scene init
+    // --- BUILD SCENE ---
     const models = try scene.buildScene(simulation.num_objects, alloc);
     defer for (models) |*m| {
         m.bvh.deinit();
         rl.unloadModel(m.*.model);
     };
 
-    // sensor state init
+    // --- INIT SENSOR ---
     var sensor = try s.Sensor.init(alloc, 800, 192, 360, 70);
     defer sensor.deinit();
     sensor.updateLocalAxes(sensor.fwd, sensor.up);
     const max_points = sensor.res_h * sensor.res_v;
 
-    // prepare mesh and materials for visualizing hits with instanced rendering
+    // --- COLLISION DRAWING ---
     var collision_mesh = rl.genMeshCube(0.02, 0.02, 0.02);
-    // loads mesh to GPU
-    rl.uploadMesh(&collision_mesh, false);
+    rl.uploadMesh(&collision_mesh, false); // loads mesh to GPU for instancing
     defer rl.unloadMesh(collision_mesh);
-    var class_counter: [CLASS_COUNT]usize = .{0} ** CLASS_COUNT;
-    const inst_mats, const inst_mat_colors = try initInstanceMats();
-    var class_tx = try initClassTxs(alloc, max_points);
+    const class_counter: []usize = try alloc.alloc(usize, simulation.class_count);
+    defer alloc.free(class_counter);
+    for (class_counter) |*class| {
+        class.* = 0;
+    }
+    const inst_mats = try sim.initInstanceMats(alloc, @intCast(simulation.class_count));
+    const class_tx = try sim.initClassTxs(alloc, max_points, @intCast(simulation.class_count));
     defer for (class_tx) |buf| alloc.free(buf);
 
+    // --- SETUP PCD WRITING ---
+    const output_dir = "frames";
+    std.fs.Dir.makeDir(std.fs.cwd(), output_dir) catch |e| {
+        switch (e) {
+            error.PathAlreadyExists => {
+                std.log.info("Writing to existing directory '{d}'", .{output_dir});
+            },
+            else => return e,
+        }
+    };
+
+    // --- INIT PCD EXPORTER / THREAD ---
     var exporter = try pcd.Exporter.create(alloc);
     defer exporter.destroy();
+    var export_dt: f32 = 0.0;
     var dump_id: u32 = 0;
-    var name_buf: [64]u8 = undefined;
 
-    // prepare multithreading for raycasting
+    // --- PREPARE MULTITHREADED RAYCASTING
     const num_threads = rc.getNumThreads();
     var thread_resources = try rc.ThreadResources.init(alloc, num_threads, max_points);
     defer thread_resources.deinit(alloc);
@@ -204,11 +90,12 @@ pub fn main() !void {
     defer pool.deinit(alloc);
     try pool.startWorkers();
 
+    // --- SIMULATION LOOP ---
     while (!rl.windowShouldClose()) {
         rl.updateCamera(&camera, camera_mode);
 
         const dt = rl.getFrameTime();
-        sensorDt(&sensor, dt, &simulation.debug);
+        sim.sensorDt(&sensor, dt, &simulation.debug);
 
         // 1. Build the contexts for this frame’s ray-casts
         rc.prepareRaycastContexts(
@@ -229,17 +116,16 @@ pub fn main() !void {
         // 3. Merge results
         const total_hit_count = rc.mergeThreadHits(
             thread_resources.hits,
-            &class_tx,
-            &class_counter,
+            class_tx,
+            class_counter,
         );
 
-        if (rl.isKeyReleased(rl.KeyboardKey.p)) { // hit P to dump a frame
-            const fname = std.fmt.bufPrint(&name_buf, "scan_{d}.pcd", .{dump_id}) catch unreachable;
-
-            exporter.dump(fname, &class_tx, &class_counter) catch |e|
-                std.log.err("queueing PCD dump failed: {}", .{e});
-
+        if (export_dt >= 1.0) {
+            try sim.exportPCD(&exporter, class_tx, class_counter, dump_id);
             dump_id += 1;
+            export_dt = 0.0;
+        } else {
+            export_dt += dt;
         }
 
         rl.beginDrawing();
@@ -251,10 +137,10 @@ pub fn main() !void {
             rl.beginMode3D(camera);
             defer rl.endMode3D();
 
-            draw3D(models, collision_mesh, &inst_mats, &class_tx, &class_counter, &sensor, &simulation);
+            sim.draw3D(models, collision_mesh, inst_mats, class_tx, class_counter, &sensor, &simulation);
         }
 
-        drawGUI(&simulation, &class_counter, total_hit_count, &inst_mat_colors);
+        sim.drawGUI(&simulation, class_counter, total_hit_count);
     }
 
     rl.closeWindow();

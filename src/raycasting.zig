@@ -7,7 +7,7 @@ const rlsimd = @import("raylib_simd.zig");
 const Acquire = std.builtin.AtomicOrder.acquire;
 const Release = std.builtin.AtomicOrder.release;
 const AcqRel = std.builtin.AtomicOrder.acq_rel;
-pub const CLASS_COUNT = 5;
+// pub const CLASS_COUNT = 5;
 
 // ────────────────────────────────────────────────────────────────
 //  DATA TYPES
@@ -243,8 +243,8 @@ pub fn prepareRaycastContexts(
 /// return the total number of hits.
 pub fn mergeThreadHits(
     thread_hit_lists: []const std.ArrayList(ThreadHit),
-    class_tx: *[CLASS_COUNT][]rl.Matrix,
-    class_counter: *[CLASS_COUNT]usize,
+    class_tx: [][]rl.Matrix,
+    class_counter: []usize,
 ) usize {
     @memset(class_counter, 0);
 
@@ -253,7 +253,7 @@ pub fn mergeThreadHits(
         total += list.items.len;
         for (list.items) |hit| {
             const cls: usize = @intCast(hit.hit_class);
-            if (cls < CLASS_COUNT) {
+            if (cls < class_counter.len) {
                 const idx = class_counter[cls];
                 class_tx[cls][idx] = hit.transform;
                 class_counter[cls] += 1;
