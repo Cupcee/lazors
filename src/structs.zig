@@ -17,7 +17,7 @@ pub const Object = struct {
     class: u32,
     color: rl.Color,
     /// world-space axis-aligned bounding box (step 1)
-    bbox_ws: rl.BoundingBox,
+    bbox_ws: rlsimd.BoundingBoxSIMD,
     bvh: bvh.BVH,
     // inv_transform: rl.Matrix, // cached
     transform_simd: rlsimd.Mat4x4_SIMD,
@@ -39,7 +39,7 @@ pub const Simulation = struct {
 //------------------------------------------------------------------
 pub const Sensor = struct {
     // –– pose and optics ––
-    pos: rl.Vector3 = .{ .x = 0, .y = 1, .z = 0 },
+    pos: rlsimd.Vec4f = .{ 0, 1, 0, 1 },
     fwd: rlsimd.Vec4f = .{ 0, 0, 1, 1 },
     up: rlsimd.Vec4f = .{ 0, 1, 0, 1 },
     yaw: f32 = 0,
@@ -142,7 +142,7 @@ pub const Sensor = struct {
                     @cos(el) * @sin(az),
                     @sin(el),
                     @cos(el) * @cos(az),
-                    1,
+                    0,
                 };
                 idx += 1;
             }

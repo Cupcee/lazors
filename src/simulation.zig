@@ -2,15 +2,16 @@ const std = @import("std");
 const rl = @import("raylib"); // ziraylib package
 const s = @import("structs.zig");
 const pcd = @import("pcd_exporter.zig");
+const rlsimd = @import("raylib_simd.zig"); // ziraylib package
 pub const INST_MAT_COLORS: [6]rl.Color = .{ rl.Color.black, rl.Color.red, rl.Color.green, rl.Color.yellow, rl.Color.blue, rl.Color.magenta };
 
 pub fn sensorDt(sensor: *s.Sensor, dt: f32, debug: *bool) void {
-    if (rl.isKeyDown(rl.KeyboardKey.right)) sensor.pos.x -= sensor.velocity * dt;
-    if (rl.isKeyDown(rl.KeyboardKey.left)) sensor.pos.x += sensor.velocity * dt;
-    if (rl.isKeyDown(rl.KeyboardKey.up)) sensor.pos.z += sensor.velocity * dt;
-    if (rl.isKeyDown(rl.KeyboardKey.down)) sensor.pos.z -= sensor.velocity * dt;
-    if (rl.isKeyDown(rl.KeyboardKey.k)) sensor.pos.y += sensor.velocity * dt;
-    if (rl.isKeyDown(rl.KeyboardKey.j)) sensor.pos.y -= sensor.velocity * dt;
+    if (rl.isKeyDown(rl.KeyboardKey.right)) sensor.pos[0] -= sensor.velocity * dt;
+    if (rl.isKeyDown(rl.KeyboardKey.left)) sensor.pos[0] += sensor.velocity * dt;
+    if (rl.isKeyDown(rl.KeyboardKey.up)) sensor.pos[2] += sensor.velocity * dt;
+    if (rl.isKeyDown(rl.KeyboardKey.down)) sensor.pos[2] -= sensor.velocity * dt;
+    if (rl.isKeyDown(rl.KeyboardKey.k)) sensor.pos[1] += sensor.velocity * dt;
+    if (rl.isKeyDown(rl.KeyboardKey.j)) sensor.pos[1] -= sensor.velocity * dt;
     if (rl.isKeyDown(rl.KeyboardKey.h)) sensor.yaw += sensor.turn_speed * dt;
     if (rl.isKeyDown(rl.KeyboardKey.l)) sensor.yaw -= sensor.turn_speed * dt;
     if (rl.isKeyReleased(rl.KeyboardKey.tab)) debug.* = !debug.*;
@@ -120,7 +121,7 @@ pub fn draw3D(
     for (models) |model| {
         rl.drawModel(model.model, rl.Vector3.zero(), 1, model.color);
     }
-    rl.drawSphere(sensor.pos, 0.07, rl.Color.black);
+    rl.drawSphere(rlsimd.vec4ToVec3(sensor.pos), 0.07, rl.Color.black);
 
     if (simulation.debug) {
         for (0..class_counter.len) |cls| {

@@ -1,16 +1,77 @@
 const std = @import("std");
 const rl = @import("raylib");
 
+/// Four‑wide packed single‑precision vector
 pub const Vec4f = @Vector(4, f32);
+
+/// SIMD‑friendly ray (all maths now use this)
+pub const RaySIMD = struct {
+    origin: Vec4f, // w must be 1
+    dir: Vec4f, // w must be 0 (always *normalised*)
+};
+
+pub const BoundingBoxSIMD = struct {
+    min: Vec4f,
+    max: Vec4f,
+};
+
+pub inline fn toBoundingBoxSIMD(bbox: rl.BoundingBox) BoundingBoxSIMD {
+    return BoundingBoxSIMD{
+        .min = vec3ToVec4W(bbox.min, 0),
+        .max = vec3ToVec4W(bbox.max, 0),
+    };
+}
+
+/// Axis‑aligned bounding box (SIMD)
+pub const AABB_SIMD = struct {
+    min: Vec4f,
+    max: Vec4f,
+
+    pub inline fn empty() AABB_SIMD {
+        return .{ .min = @splat(std.math.inf(f32)), .max = @splat(-std.math.inf(f32)) };
+    }
+
+    pub inline fn expand(self: *AABB_SIMD, p: Vec4f) void {
+        self.min = @min(self.min, p);
+        self.max = @max(self.max, p);
+    }
+
+    pub inline fn unite(a: AABB_SIMD, b: AABB_SIMD) AABB_SIMD {
+        return .{ .min = @min(a.min, b.min), .max = @max(a.max, b.max) };
+    }
+
+    /// Classic slab test – true when the segment [tMin,tMax] intersects.
+    pub inline fn hit(box: AABB_SIMD, ray: RaySIMD, tMin: f32, tMax: f32) bool {
+        const invDir = @as(Vec4f, @splat(1.0)) / ray.dir;
+
+        const t0 = (box.min - ray.origin) * invDir;
+        const t1 = (box.max - ray.origin) * invDir;
+
+        const tmin_v = @min(t0, t1);
+        const tmax_v = @max(t0, t1);
+
+        // ‼️ Ignore lane 3 (w) – we only care about xyz.
+        const tNear = @max(@max(tmin_v[0], tmin_v[1]), tmin_v[2]);
+        const tFar = @min(@min(tmax_v[0], tmax_v[1]), tmax_v[2]);
+
+        return tNear <= tFar and tFar >= tMin and tNear <= tMax;
+    }
+
+    /// Axis (0/1/2) with largest extent.
+    pub inline fn largestExtentAxis(box: AABB_SIMD) u8 {
+        const e = box.max - box.min;
+        return if (e[0] > e[1] and e[0] > e[2]) 0 else if (e[1] > e[2]) 1 else 2;
+    }
+};
 
 // Helper function to load a Vec3 into a Vec4
 // Pad with 'w' (1.0 for position, 0.0 for direction)
-pub fn vec3ToVec4W(v3: rl.Vector3, w: f32) Vec4f {
+pub inline fn vec3ToVec4W(v3: rl.Vector3, w: f32) Vec4f {
     return .{ v3.x, v3.y, v3.z, w };
 }
 
 // Helper to extract Vec3 from Vec4 (ignores w)
-pub fn vec4ToVec3(v4: Vec4f) rl.Vector3 {
+pub inline fn vec4ToVec3(v4: Vec4f) rl.Vector3 {
     return .{ .x = v4[0], .y = v4[1], .z = v4[2] };
 }
 
@@ -132,66 +193,54 @@ pub fn crossSIMD(a: Vec4f, b: Vec4f) Vec4f {
     return (a_yzx * b_zxy) - (a_zxy * b_yzx);
 }
 
-// ---- SIMD Ray–AABB intersection ---------------------
-pub fn getRayCollisionBoxSIMD(ray: rl.Ray, box: rl.BoundingBox) rl.RayCollision {
-    const origin = Vec4f{ ray.position.x, ray.position.y, ray.position.z, 0.0 };
-    const dir = Vec4f{ ray.direction.x, ray.direction.y, ray.direction.z, 0.0 };
+// ─── SIMD Ray–AABB intersection ────────────────────────────────────────────
+pub fn getRayCollisionBoxSIMD(ray: RaySIMD, box: BoundingBoxSIMD) rl.RayCollision {
+    // xyz → SIMD, w = 0 so it never influences the maths
+    const origin = Vec4f{ ray.origin[0], ray.origin[1], ray.origin[2], 0 };
+    const dir = Vec4f{ ray.dir[0], ray.dir[1], ray.dir[2], 0 };
 
-    // Reciprocal (handles ∞ when dir[i] == 0)
-    const ones: Vec4f = @splat(1);
-    const inv_dir = ones / dir; // Fast, maps to vrcp* or divps
+    // 1 / dir  (∞ where dir == 0)
+    const inv_dir = @as(Vec4f, @splat(1.0)) / dir;
 
-    const bmin = Vec4f{ box.min.x, box.min.y, box.min.z, 0.0 };
-    const bmax = Vec4f{ box.max.x, box.max.y, box.max.z, 0.0 };
+    // parametric distances to the slabs
+    const t1 = (box.min - origin) * inv_dir;
+    const t2 = (box.max - origin) * inv_dir;
 
-    // (b - o) * inv_dir
-    const t1 = (bmin - origin) * inv_dir;
-    const t2 = (bmax - origin) * inv_dir;
-
-    // Per‑component min/max
     const tmin_v = @min(t1, t2);
     const tmax_v = @max(t1, t2);
 
-    // Horizontal reduce
-    const t_near = @reduce(.Max, tmin_v);
-    const t_far = @reduce(.Min, tmax_v);
+    // use only XYZ lanes for the reduce
+    const t_near = @max(@max(tmin_v[0], tmin_v[1]), tmin_v[2]);
+    const t_far = @min(@min(tmax_v[0], tmax_v[1]), tmax_v[2]);
 
-    var result: rl.RayCollision = .{ .hit = false, .distance = 0, .point = ray.position, .normal = .{ .x = 0, .y = 0, .z = 0 } };
+    var rc: rl.RayCollision = .{
+        .hit = false,
+        .distance = 0,
+        .point = rl.Vector3{ .x = ray.origin[0], .y = ray.origin[1], .z = ray.origin[2] },
+        .normal = .{ .x = 0, .y = 0, .z = 0 },
+    };
 
-    // Early‑out: ray origin already inside box
+    // ray starts inside?
     if (t_near < 0.0 and t_far >= 0.0) {
-        result.hit = true;
-        result.distance = 0.0;
-        return result;
+        rc.hit = true;
+        return rc; // distance = 0, point already set
     }
 
+    // regular intersection
     if (t_far >= @max(t_near, 0.0)) {
-        // We have an intersection – record the distance of first contact
-        result.hit = true;
-        result.distance = t_near;
-        result.point = .{
-            .x = ray.position.x + ray.direction.x * t_near,
-            .y = ray.position.y + ray.direction.y * t_near,
-            .z = ray.position.z + ray.direction.z * t_near,
+        rc.hit = true;
+        rc.distance = t_near;
+        rc.point = .{
+            .x = ray.origin[0] + ray.dir[0] * t_near,
+            .y = ray.origin[1] + ray.dir[1] * t_near,
+            .z = ray.origin[2] + ray.dir[2] * t_near,
         };
 
-        // Optional: compute the box face normal that was hit
-        const eps = 1e-5;
-        const hit_pos = result.point;
-        if (@abs(hit_pos.x - box.min.x) < eps) {
-            result.normal = .{ .x = -1, .y = 0, .z = 0 };
-        } else if (@abs(hit_pos.x - box.max.x) < eps) {
-            result.normal = .{ .x = 1, .y = 0, .z = 0 };
-        } else if (@abs(hit_pos.y - box.min.y) < eps) {
-            result.normal = .{ .x = 0, .y = -1, .z = 0 };
-        } else if (@abs(hit_pos.y - box.max.y) < eps) {
-            result.normal = .{ .x = 0, .y = 1, .z = 0 };
-        } else if (@abs(hit_pos.z - box.min.z) < eps) {
-            result.normal = .{ .x = 0, .y = 0, .z = -1 };
-        } else if (@abs(hit_pos.z - box.max.z) < eps) {
-            result.normal = .{ .x = 0, .y = 0, .z = 1 };
-        }
+        // simple face normal (optional – unchanged)
+        const eps: f32 = 1e-5;
+        const p = rc.point;
+        if (@abs(p.x - box.min[0]) < eps) rc.normal = .{ .x = -1, .y = 0, .z = 0 } else if (@abs(p.x - box.max[0]) < eps) rc.normal = .{ .x = 1, .y = 0, .z = 0 } else if (@abs(p.y - box.min[1]) < eps) rc.normal = .{ .x = 0, .y = -1, .z = 0 } else if (@abs(p.y - box.max[1]) < eps) rc.normal = .{ .x = 0, .y = 1, .z = 0 } else if (@abs(p.z - box.min[2]) < eps) rc.normal = .{ .x = 0, .y = 0, .z = -1 } else if (@abs(p.z - box.max[2]) < eps) rc.normal = .{ .x = 0, .y = 0, .z = 1 };
     }
 
-    return result;
+    return rc;
 }
