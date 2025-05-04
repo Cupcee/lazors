@@ -117,7 +117,7 @@ pub fn getMeshesBoundingBoxPtr(meshes: [*c]rl.Mesh, meshCount: usize) rl.Boundin
 //──────────────────────────────────────────────────────────────
 // Helper to push one Object into the scene list
 //──────────────────────────────────────────────────────────────
-fn pushObject(
+pub fn pushObjectAssumeCapacity(
     mesh: rl.Mesh,
     class: u32,
     color: rl.Color,
@@ -145,6 +145,34 @@ fn pushObject(
     });
 }
 
+pub fn pushObject(
+    mesh: rl.Mesh,
+    class: u32,
+    color: rl.Color,
+    transform: rl.Matrix,
+    dst: *std.ArrayListAligned(s.Object, null),
+    alloc: std.mem.Allocator,
+) !void {
+    const mesh_bvh = try buildBVHFromMesh(alloc, mesh);
+
+    var mdl = try rl.loadModelFromMesh(mesh);
+    mdl.transform = transform;
+
+    const local_bb = rl.getMeshBoundingBox(mesh);
+    const world_bb = math.transformBBox(local_bb, transform);
+    const inv_tr = rl.Matrix.invert(transform);
+
+    try dst.append(.{
+        .model = mdl,
+        .class = class,
+        .color = color,
+        .bbox_ws = simd.toBoundingBoxSIMD(world_bb),
+        .bvh = mesh_bvh,
+        .transform_simd = simd.Mat4x4_SIMD.fromRlMatrix(transform),
+        .inv_transform_simd = simd.Mat4x4_SIMD.fromRlMatrix(inv_tr),
+    });
+}
+
 //──────────────────────────────────────────────────────────────
 // Build complete scene
 //──────────────────────────────────────────────────────────────
@@ -153,7 +181,7 @@ pub fn buildScene(
     object_count: usize,
     num_classes: usize,
     plane_half_size: f32,
-) ![]const s.Object {
+) !std.ArrayList(s.Object) {
     var objs = try std.ArrayList(s.Object).initCapacity(alloc, object_count + 1);
     errdefer {
         for (objs.items) |o| rl.unloadModel(o.model);
@@ -172,9 +200,9 @@ pub fn buildScene(
         const t = rl.Matrix.translate(x, y, z);
 
         switch (kind) {
-            0 => try pushObject(rl.genMeshCube(2, 2, 2), 1, rl.Color.dark_gray, t, &objs, alloc),
-            1 => try pushObject(rl.genMeshSphere(1.5, 12, 12), 2, rl.Color.dark_gray, t, &objs, alloc),
-            2 => try pushObject(rl.genMeshCylinder(2, 4, 12), 3, rl.Color.dark_gray, t, &objs, alloc),
+            0 => try pushObjectAssumeCapacity(rl.genMeshCube(2, 2, 2), 1, rl.Color.dark_gray, t, &objs, alloc),
+            1 => try pushObjectAssumeCapacity(rl.genMeshSphere(1.5, 12, 12), 2, rl.Color.dark_gray, t, &objs, alloc),
+            2 => try pushObjectAssumeCapacity(rl.genMeshCylinder(2, 4, 12), 3, rl.Color.dark_gray, t, &objs, alloc),
             3 => { // “grandpa” GLTF
                 var mdl = try rl.loadModel("resources/objects/grandpa/scene.gltf");
                 const scale = rl.Matrix.scale(0.01, 0.01, 0.01);
@@ -229,5 +257,5 @@ pub fn buildScene(
         alloc,
     );
 
-    return try objs.toOwnedSlice();
+    return objs;
 }

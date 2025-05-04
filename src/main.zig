@@ -50,7 +50,7 @@ pub fn main() !void {
 
     var simulation = structs.Simulation{
         .num_objects = args.num_objects orelse 3,
-        .target_fps = args.target_fps orelse 60,
+        .target_fps = args.target_fps orelse 30,
         .plane_half_size = args.plane_half_size orelse 7.5,
         .collect = if (args.collect != 0) true else false,
         .collect_wait_seconds = args.collect_wait_seconds orelse 1.0,
@@ -71,20 +71,13 @@ pub fn main() !void {
         rl.updateCamera(&ctx.camera, ctx.camera_mode);
 
         const dt = rl.getFrameTime();
-        sim.sensorDt(&ctx.sensor, dt, &simulation.debug);
+        const contact_point = rc.getCameraRayContactPoint(&ctx.camera, ctx.models.items);
+        sim.handleKeys(&ctx, contact_point, dt, &simulation.debug);
 
         for (ctx.class_tx) |*dst| dst.clearRetainingCapacity();
 
         // 1. Build the contexts for this frame’s ray-casts
-        rc.prepareRaycastContexts(
-            ctx.thread_ctx,
-            &ctx.sensor,
-            ctx.models,
-            state.JITTER,
-            ctx.thread_res.prngs,
-            ctx.thread_res.hits,
-            ctx.max_points,
-        );
+        rc.prepareRaycastContexts(&ctx, state.JITTER);
 
         // 2. let the pool run them
         const n_jobs = ctx.pool.contexts.len;
@@ -92,11 +85,7 @@ pub fn main() !void {
         ctx.pool.wait(); // blocks until all rays done
 
         // 3. Merge results
-        const total_hit_count = rc.mergeThreadHits(
-            ctx.thread_res.hits,
-            ctx.class_tx,
-            ctx.class_counter,
-        );
+        const total_hit_count = rc.mergeThreadHits(ctx.thread_res.hits, ctx.class_tx, ctx.class_counter);
 
         if (simulation.collect) {
             if (export_dt >= simulation.collect_wait_seconds) {
@@ -117,9 +106,9 @@ pub fn main() !void {
             rl.beginMode3D(ctx.camera);
             defer rl.endMode3D();
 
-            sim.draw3D(ctx.models, ctx.collision, ctx.inst_mats, ctx.class_tx, ctx.class_counter, &ctx.sensor, &simulation);
+            sim.draw3D(&ctx, &simulation, contact_point);
         }
 
-        sim.drawGUI(&simulation, ctx.class_counter, total_hit_count);
+        sim.drawGUI(&ctx, &simulation, total_hit_count);
     }
 }

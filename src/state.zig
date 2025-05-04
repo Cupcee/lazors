@@ -6,20 +6,30 @@ const scene = @import("scene.zig");
 const sim = @import("simulation.zig");
 const pcd = @import("pcd_exporter.zig");
 const tp = @import("thread_pool.zig");
+const rlsimd = @import("raylib_simd.zig");
 
 const RayPool = tp.ThreadPool(rc.RaycastContext, rc.raycastWorker);
 pub const WIN_W = 1240;
 pub const WIN_H = 800;
 pub const JITTER = 0.002;
 
+pub const ModelPlacerItem = enum {
+    cube,
+    cylinder,
+    sphere,
+    grandpa,
+    dinosaur,
+};
+
 pub const State = struct {
+    alloc: std.mem.Allocator,
     //‑‑ persistent
     simulation: *s.Simulation,
 
     //‑‑ graphics / IO
     camera: rl.Camera,
     camera_mode: rl.CameraMode,
-    models: []const s.Object,
+    models: std.ArrayList(s.Object),
 
     //‑‑ sensor & drawing helpers
     sensor: s.Sensor,
@@ -36,6 +46,10 @@ pub const State = struct {
     thread_res: rc.ThreadResources,
     thread_ctx: []rc.RaycastContext,
     pool: RayPool,
+
+    //-- editor state
+    selected_model: ModelPlacerItem = ModelPlacerItem.cube,
+    show_editor: bool = false,
 
     pub fn init(alloc: std.mem.Allocator, sim_cfg: *s.Simulation) !State {
         //------------------------------------------------------------------
@@ -98,6 +112,7 @@ pub const State = struct {
         const pool = try RayPool.init(alloc, n_threads, thread_ctx);
 
         return State{
+            .alloc = alloc,
             .simulation = sim_cfg,
             .camera = cam,
             .camera_mode = cam_mode,
@@ -137,11 +152,16 @@ pub const State = struct {
 
         // mesh & models
         rl.unloadMesh(self.collision);
-        for (self.models) |*m| {
-            m.bvh.deinit();
-            rl.unloadModel(m.*.model);
+        // for (self.models.items) |m| {
+        //     m.bvh.deinit();
+        //     // rl.unloadModel(m.model);
+        // }
+        // self.models.deinit();
+        for (self.models.items) |*o| {
+            rl.unloadModel(o.model);
+            o.bvh.deinit();
         }
-        a.free(self.models);
+        self.models.deinit();
 
         // window *last*
         rl.closeWindow();

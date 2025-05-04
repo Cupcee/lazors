@@ -4,6 +4,7 @@ const builtin = @import("builtin");
 const rand = std.Random;
 const s = @import("structs.zig");
 const rlsimd = @import("raylib_simd.zig");
+const state = @import("state.zig");
 const Acquire = std.builtin.AtomicOrder.acquire;
 const Release = std.builtin.AtomicOrder.release;
 const AcqRel = std.builtin.AtomicOrder.acq_rel;
@@ -22,7 +23,7 @@ pub const RaycastContext = struct {
     thread_id: usize,
     start_index: usize,
     end_index: usize,
-    sensor: *const s.Sensor,
+    sensor: *s.Sensor,
     models: []const s.Object,
     jitter_scale: f32,
     thread_prng: *rand.DefaultPrng,
@@ -127,8 +128,7 @@ fn closestHit(ray_ws: rl.Ray, models: []const s.Object, max_range: f32) HitResul
 /// Worker function for a thread.
 pub fn raycastWorker(ctx: *const RaycastContext) void {
     const rng = ctx.thread_prng.random();
-    var hits = &ctx.thread_hits.*;
-    var ptr = hits.items.ptr;
+    var ptr = ctx.thread_hits.items.ptr;
     var n: usize = 0;
 
     for (ctx.start_index..ctx.end_index) |gidx| {
@@ -150,29 +150,24 @@ pub fn raycastWorker(ctx: *const RaycastContext) void {
             n += 1;
         }
     }
-    hits.items.len = n;
+    ctx.thread_hits.items.len = n;
 }
 
 /// Slice‐by-slice preparation of the contexts that each worker thread
 /// will receive.  All storage lives *outside* the function so there
 /// are no hidden allocations.
 pub fn prepareRaycastContexts(
-    contexts: []RaycastContext,
-    sensor: *s.Sensor,
-    models: []const s.Object,
+    ctx: *state.State,
     jitter_scale: f32,
-    thread_prngs: []rand.DefaultPrng,
-    thread_hit_lists: []std.ArrayList(ThreadHit),
-    n_rays: usize,
 ) void {
-    const num_threads = contexts.len;
-    const rays_per_thread = n_rays / num_threads;
-    var remaining_rays = n_rays % num_threads;
+    const num_threads = ctx.thread_ctx.len;
+    const rays_per_thread = ctx.max_points / num_threads;
+    var remaining_rays = ctx.max_points % num_threads;
     var ray_idx: usize = 0;
 
-    for (contexts, 0..) |*ctx, i| {
+    for (ctx.thread_ctx, 0..) |*t_ctx, i| {
         // clear & reuse the slice that will collect this thread’s hits
-        thread_hit_lists[i].clearRetainingCapacity();
+        ctx.thread_res.hits[i].clearRetainingCapacity();
 
         var chunk = rays_per_thread;
         if (remaining_rays > 0) {
@@ -181,18 +176,18 @@ pub fn prepareRaycastContexts(
         }
 
         const start = ray_idx;
-        const end = @min(start + chunk, n_rays);
+        const end = @min(start + chunk, ctx.max_points);
 
-        ctx.* = .{
+        t_ctx.* = .{
             .thread_id = i,
             .start_index = start,
             .end_index = end,
-            .sensor = sensor,
-            .models = models,
+            .sensor = &ctx.sensor,
+            .models = ctx.models.items, // TODO: is this wasteful?
             .jitter_scale = jitter_scale,
-            .thread_prng = &thread_prngs[i],
-            .thread_hits = &thread_hit_lists[i],
-            .points_slice = sensor.points[start..end],
+            .thread_prng = &ctx.thread_res.prngs[i],
+            .thread_hits = &ctx.thread_res.hits[i],
+            .points_slice = ctx.sensor.points[start..end],
             .skip = start == end,
         };
 
@@ -276,4 +271,20 @@ pub const ThreadResources = struct {
 
 pub fn getNumThreads() usize {
     return @max(1, std.Thread.getCpuCount() catch 1);
+}
+
+pub fn getCameraRayContactPoint(camera: *rl.Camera, models: []s.Object) ?rl.Vector3 {
+    const origin = rlsimd.vec3ToVec4W(camera.position, 1.0);
+    const target = rlsimd.vec3ToVec4W(camera.target, 1.0);
+    const dir = rlsimd.normalizeSIMD(target - origin);
+    const ray_ws = rlsimd.RaySIMD{
+        .origin = origin,
+        .dir = dir,
+    };
+    const nearest = closestHitSIMD(ray_ws, models, 100.0);
+    if (nearest.hit) {
+        const rl_point = rlsimd.vec4ToVec3(nearest.point);
+        return rl_point;
+    }
+    return null;
 }
