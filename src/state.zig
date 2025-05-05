@@ -50,6 +50,16 @@ pub const State = struct {
     //-- editor state
     selected_model: ModelPlacerItem = ModelPlacerItem.cube,
     show_editor: bool = false,
+    editor_tx: rl.Matrix,
+    editor_pivot: rl.Vector3,
+    editor_yaw: f32 = 0.0,
+    editor_scale: f32 = 1.0,
+    preview_mat: rl.Material,
+    preview_meshes: struct {
+        cube: rl.Mesh,
+        cylinder: rl.Mesh,
+        sphere: rl.Mesh,
+    },
 
     pub fn init(alloc: std.mem.Allocator, sim_cfg: *s.Simulation) !State {
         //------------------------------------------------------------------
@@ -111,6 +121,19 @@ pub const State = struct {
         const thread_ctx = try alloc.alloc(rc.RaycastContext, n_threads);
         const pool = try RayPool.init(alloc, n_threads, thread_ctx);
 
+        //------------------------------------------------------------------
+        //  Model editor
+        //------------------------------------------------------------------
+        var pmat = try rl.loadMaterialDefault();
+        pmat.maps[@intFromEnum(rl.MATERIAL_MAP_DIFFUSE)].color = rl.Color.dark_gray;
+        // preview meshes -----------------------------------------------------------
+        var cube_mesh = rl.genMeshCube(1, 1, 1);
+        var cylinder_mesh = rl.genMeshCylinder(2, 4, 12);
+        var sphere_mesh = rl.genMeshSphere(1.5, 12, 12);
+        rl.uploadMesh(&cube_mesh, false);
+        rl.uploadMesh(&cylinder_mesh, false);
+        rl.uploadMesh(&sphere_mesh, false);
+
         return State{
             .alloc = alloc,
             .simulation = sim_cfg,
@@ -127,6 +150,14 @@ pub const State = struct {
             .thread_res = thread_res,
             .thread_ctx = thread_ctx,
             .pool = pool,
+            .editor_tx = rl.Matrix.identity(),
+            .editor_pivot = rl.Vector3.zero(),
+            .preview_mat = pmat,
+            .preview_meshes = .{
+                .cube = cube_mesh,
+                .cylinder = cylinder_mesh,
+                .sphere = sphere_mesh,
+            },
         };
     }
 
@@ -152,16 +183,16 @@ pub const State = struct {
 
         // mesh & models
         rl.unloadMesh(self.collision);
-        // for (self.models.items) |m| {
-        //     m.bvh.deinit();
-        //     // rl.unloadModel(m.model);
-        // }
-        // self.models.deinit();
         for (self.models.items) |*o| {
             rl.unloadModel(o.model);
             o.bvh.deinit();
         }
         self.models.deinit();
+
+        rl.unloadMaterial(self.preview_mat);
+        rl.unloadMesh(self.preview_meshes.cube);
+        rl.unloadMesh(self.preview_meshes.cylinder);
+        rl.unloadMesh(self.preview_meshes.sphere);
 
         // window *last*
         rl.closeWindow();

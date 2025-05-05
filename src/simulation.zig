@@ -6,43 +6,114 @@ const state = @import("state.zig");
 const rlsimd = @import("raylib_simd.zig"); // ziraylib package
 const scene = @import("scene.zig");
 pub const INST_MAT_COLORS: [6]rl.Color = .{ rl.Color.black, rl.Color.red, rl.Color.green, rl.Color.yellow, rl.Color.blue, rl.Color.magenta };
+const EDITOR_TURN_SPEED = 2.0; // rad · s⁻¹
+const EDITOR_SCALE_SPEED = 1.5; // 50 % per second
+const deg2rad: f32 = 0.0174532925;
 
-pub fn handleKeys(ctx: *state.State, contact_pos: ?rl.Vector3, dt: f32, debug: *bool) void {
+// ──────────────────────────────────────────────────────────────
+//  helper: lift the mesh so it rests on the hit point
+// ──────────────────────────────────────────────────────────────
+fn toHitPointTx(item: state.ModelPlacerItem) rl.Matrix {
+    return switch (item) {
+        .cube => rl.Matrix.translate(0, 0.5, 0), // 1 × 1 × 1  → +½
+        .cylinder => rl.Matrix.translate(0, 2.0, 0), // height 4  → +2
+        .sphere => rl.Matrix.translate(0, 1.5, 0), // Ø 3       → +1.5
+        else => rl.Matrix.identity(),
+    };
+}
+
+/// Build the **local** transform for the preview / newly placed object.
+/// Order for row‑vector convention: **scale → rotate → lift**
+fn makeEditorTx(yaw: f32, scale: f32, item: state.ModelPlacerItem) rl.Matrix {
+    const rot = rl.Matrix.rotateY(yaw);
+    const scl = rl.Matrix.scale(scale, scale, scale);
+    const lift = toHitPointTx(item); // applied last
+    return rl.Matrix.multiply(rl.Matrix.multiply(scl, rot), lift);
+}
+
+pub fn handleKeys(ctx: *state.State, contact: ?rl.Vector3, dt: f32, debug: *bool) void {
+    // ------------- camera controls (unchanged) -----------------
     if (rl.isKeyDown(rl.KeyboardKey.right)) ctx.sensor.pos[0] -= ctx.sensor.velocity * dt;
     if (rl.isKeyDown(rl.KeyboardKey.left)) ctx.sensor.pos[0] += ctx.sensor.velocity * dt;
     if (rl.isKeyDown(rl.KeyboardKey.up)) ctx.sensor.pos[2] += ctx.sensor.velocity * dt;
     if (rl.isKeyDown(rl.KeyboardKey.down)) ctx.sensor.pos[2] -= ctx.sensor.velocity * dt;
-    if (rl.isKeyDown(rl.KeyboardKey.k)) ctx.sensor.pos[1] += ctx.sensor.velocity * dt;
-    if (rl.isKeyDown(rl.KeyboardKey.j)) ctx.sensor.pos[1] -= ctx.sensor.velocity * dt;
-    if (rl.isKeyDown(rl.KeyboardKey.h)) ctx.sensor.yaw += ctx.sensor.turn_speed * dt;
-    if (rl.isKeyDown(rl.KeyboardKey.l)) ctx.sensor.yaw -= ctx.sensor.turn_speed * dt;
+    if (!ctx.show_editor) {
+        if (rl.isKeyDown(rl.KeyboardKey.k)) ctx.sensor.pos[1] += ctx.sensor.velocity * dt;
+        if (rl.isKeyDown(rl.KeyboardKey.j)) ctx.sensor.pos[1] -= ctx.sensor.velocity * dt;
+        if (rl.isKeyDown(rl.KeyboardKey.h)) ctx.sensor.yaw += ctx.sensor.turn_speed * dt;
+        if (rl.isKeyDown(rl.KeyboardKey.l)) ctx.sensor.yaw -= ctx.sensor.turn_speed * dt;
+    }
+
+    // ------------- choose a primitive to place ----------------
     if (rl.isKeyDown(rl.KeyboardKey.one)) ctx.selected_model = state.ModelPlacerItem.cube;
     if (rl.isKeyDown(rl.KeyboardKey.two)) ctx.selected_model = state.ModelPlacerItem.cylinder;
     if (rl.isKeyDown(rl.KeyboardKey.three)) ctx.selected_model = state.ModelPlacerItem.sphere;
+
     if (rl.isKeyReleased(rl.KeyboardKey.tab)) debug.* = !debug.*;
-    if (rl.isKeyDown(rl.KeyboardKey.left_shift)) {
-        if (contact_pos != null) {
+
+    // ───────────────────────────────────────────────────────────
+    //  EDITOR MODE  (⇧ key held down)
+    // ───────────────────────────────────────────────────────────
+    if (rl.isKeyDown(rl.KeyboardKey.left_shift) and contact != null) {
+        // first frame after ⇧ pressed: initialise editor state
+        if (!ctx.show_editor) {
             ctx.show_editor = true;
-            if (rl.isMouseButtonPressed(rl.MouseButton.left)) {
-                const t = rl.Matrix.translate(contact_pos.?.x, contact_pos.?.y, contact_pos.?.z);
-                switch (ctx.selected_model) {
-                    state.ModelPlacerItem.cube => {
-                        scene.pushObject(rl.genMeshCube(1, 1, 1), 1, rl.Color.dark_gray, t, &ctx.models, ctx.alloc) catch unreachable;
-                    },
-                    state.ModelPlacerItem.cylinder => {
-                        scene.pushObject(rl.genMeshCylinder(2, 4, 12), 1, rl.Color.dark_gray, t, &ctx.models, ctx.alloc) catch unreachable;
-                    },
-                    state.ModelPlacerItem.sphere => {
-                        scene.pushObject(rl.genMeshSphere(1.5, 12, 12), 1, rl.Color.dark_gray, t, &ctx.models, ctx.alloc) catch unreachable;
-                    },
-                    else => unreachable,
-                }
+            ctx.editor_pivot = contact.?;
+            ctx.editor_yaw = 0;
+            ctx.editor_scale = 1.0;
+        }
+
+        // accumulate edits
+        if (rl.isKeyDown(rl.KeyboardKey.h)) ctx.editor_yaw += EDITOR_TURN_SPEED * dt;
+        if (rl.isKeyDown(rl.KeyboardKey.l)) ctx.editor_yaw -= EDITOR_TURN_SPEED * dt;
+        if (rl.isKeyDown(rl.KeyboardKey.j)) ctx.editor_scale *= 1.0 + EDITOR_SCALE_SPEED * dt;
+        if (rl.isKeyDown(rl.KeyboardKey.k)) ctx.editor_scale /= 1.0 + EDITOR_SCALE_SPEED * dt;
+
+        // rebuild *every* frame – no floating‑point drift
+        ctx.editor_tx = makeEditorTx(
+            ctx.editor_yaw,
+            ctx.editor_scale,
+            ctx.selected_model,
+        );
+
+        // place the object with LMB
+        if (rl.isMouseButtonPressed(rl.MouseButton.left)) {
+            const pivotT = rl.Matrix.translate(ctx.editor_pivot.x, ctx.editor_pivot.y, ctx.editor_pivot.z);
+            const world_tx = rl.Matrix.multiply(ctx.editor_tx, pivotT); // pivot last!
+
+            switch (ctx.selected_model) {
+                .cube => scene.pushObject(
+                    rl.genMeshCube(1, 1, 1),
+                    1,
+                    rl.Color.dark_gray,
+                    world_tx,
+                    &ctx.models,
+                    ctx.alloc,
+                ) catch unreachable,
+                .cylinder => scene.pushObject(
+                    rl.genMeshCylinder(2, 4, 12),
+                    1,
+                    rl.Color.dark_gray,
+                    world_tx,
+                    &ctx.models,
+                    ctx.alloc,
+                ) catch unreachable,
+                .sphere => scene.pushObject(
+                    rl.genMeshSphere(1.5, 12, 12),
+                    1,
+                    rl.Color.dark_gray,
+                    world_tx,
+                    &ctx.models,
+                    ctx.alloc,
+                ) catch unreachable,
+                else => unreachable,
             }
         }
-    } else {
+    } else { // ⇧ released → leave editor mode
         ctx.show_editor = false;
     }
 
+    // ------- sensor orientation (unchanged) -------------------
     const half_pi: f32 = std.math.pi / 2.0 - 0.001;
     ctx.sensor.pitch = std.math.clamp(ctx.sensor.pitch, -half_pi, half_pi);
 
@@ -150,7 +221,6 @@ pub fn drawGUI(
 pub fn draw3D(
     ctx: *state.State,
     simulation: *s.Simulation,
-    contact_point: ?rl.Vector3,
 ) void {
     for (ctx.models.items) |model| {
         rl.drawModel(model.model, rl.Vector3.zero(), 1, model.color);
@@ -169,20 +239,16 @@ pub fn draw3D(
         }
     }
 
-    if (contact_point != null) {
-        if (ctx.show_editor) {
-            switch (ctx.selected_model) {
-                state.ModelPlacerItem.cube => {
-                    rl.drawCube(contact_point.?, 1.0, 1.0, 1.0, rl.Color.dark_gray);
-                },
-                state.ModelPlacerItem.cylinder => {
-                    rl.drawCylinder(contact_point.?, 2, 2, 4, 12, rl.Color.dark_gray);
-                },
-                state.ModelPlacerItem.sphere => {
-                    rl.drawSphere(contact_point.?, 1.5, rl.Color.dark_gray);
-                },
-                else => unreachable,
-            }
+    // live preview of the placer object
+    if (ctx.show_editor) {
+        const pivotT = rl.Matrix.translate(ctx.editor_pivot.x, ctx.editor_pivot.y, ctx.editor_pivot.z);
+        const world_tx = rl.Matrix.multiply(ctx.editor_tx, pivotT);
+
+        switch (ctx.selected_model) {
+            .cube => rl.drawMesh(ctx.preview_meshes.cube, ctx.preview_mat, world_tx),
+            .cylinder => rl.drawMesh(ctx.preview_meshes.cylinder, ctx.preview_mat, world_tx),
+            .sphere => rl.drawMesh(ctx.preview_meshes.sphere, ctx.preview_mat, world_tx),
+            else => unreachable,
         }
     }
 }
