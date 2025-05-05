@@ -58,7 +58,6 @@ pub fn handleKeys(ctx: *state.State, contact: ?rl.Vector3, dt: f32, debug: *bool
         // first frame after ⇧ pressed: initialise editor state
         if (!ctx.show_editor) {
             ctx.show_editor = true;
-            ctx.editor_pivot = contact.?;
             ctx.editor_yaw = 0;
             ctx.editor_scale = 1.0;
         }
@@ -78,7 +77,7 @@ pub fn handleKeys(ctx: *state.State, contact: ?rl.Vector3, dt: f32, debug: *bool
 
         // place the object with LMB
         if (rl.isMouseButtonPressed(rl.MouseButton.left)) {
-            const pivotT = rl.Matrix.translate(ctx.editor_pivot.x, ctx.editor_pivot.y, ctx.editor_pivot.z);
+            const pivotT = rl.Matrix.translate(contact.?.x, contact.?.y, contact.?.z);
             const world_tx = rl.Matrix.multiply(ctx.editor_tx, pivotT); // pivot last!
 
             switch (ctx.selected_model) {
@@ -221,6 +220,7 @@ pub fn drawGUI(
 pub fn draw3D(
     ctx: *state.State,
     simulation: *s.Simulation,
+    contact: ?rl.Vector3,
 ) void {
     for (ctx.models.items) |model| {
         rl.drawModel(model.model, rl.Vector3.zero(), 1, model.color);
@@ -240,8 +240,8 @@ pub fn draw3D(
     }
 
     // live preview of the placer object
-    if (ctx.show_editor) {
-        const pivotT = rl.Matrix.translate(ctx.editor_pivot.x, ctx.editor_pivot.y, ctx.editor_pivot.z);
+    if (ctx.show_editor and contact != null) {
+        const pivotT = rl.Matrix.translate(contact.?.x, contact.?.y, contact.?.z);
         const world_tx = rl.Matrix.multiply(ctx.editor_tx, pivotT);
 
         switch (ctx.selected_model) {

@@ -106,7 +106,7 @@ pub fn main() !void {
             rl.beginMode3D(ctx.camera);
             defer rl.endMode3D();
 
-            sim.draw3D(&ctx, &simulation);
+            sim.draw3D(&ctx, &simulation, contact_point);
         }
 
         sim.drawGUI(&ctx, &simulation, total_hit_count);
