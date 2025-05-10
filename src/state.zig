@@ -59,6 +59,8 @@ pub const State = struct {
         cube: rl.Mesh,
         cylinder: rl.Mesh,
         sphere: rl.Mesh,
+        grandpa: rl.Model,
+        // godzilla: rl.Model,
     },
 
     pub fn init(alloc: std.mem.Allocator, sim_cfg: *s.Simulation) !State {
@@ -133,6 +135,7 @@ pub const State = struct {
         rl.uploadMesh(&cube_mesh, false);
         rl.uploadMesh(&cylinder_mesh, false);
         rl.uploadMesh(&sphere_mesh, false);
+        const grandpa_mdl = try rl.loadModel("resources/objects/grandpa/scene.gltf");
 
         return State{
             .alloc = alloc,
@@ -157,6 +160,7 @@ pub const State = struct {
                 .cube = cube_mesh,
                 .cylinder = cylinder_mesh,
                 .sphere = sphere_mesh,
+                .grandpa = grandpa_mdl,
             },
         };
     }

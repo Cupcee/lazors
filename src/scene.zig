@@ -145,6 +145,33 @@ pub fn pushObjectAssumeCapacity(
     });
 }
 
+pub fn pushGLTF(
+    file_name: [:0]const u8,
+    class: u32,
+    transform: rl.Matrix,
+    dst: *std.ArrayListAligned(s.Object, null),
+    alloc: std.mem.Allocator,
+) !void {
+    var mdl = try rl.loadModel(file_name);
+    const rx = rl.Matrix.rotateX(std.math.pi / 2.0);
+    const scale = rl.Matrix.scale(0.01, 0.01, 0.01);
+    mdl.transform = rl.Matrix.multiply(rl.Matrix.multiply(rl.Matrix.multiply(mdl.transform, scale), rx), transform);
+    const bb_l = getMeshesBoundingBoxPtr(mdl.meshes, @intCast(mdl.meshCount));
+    const bb_w = math.transformBBox(bb_l, mdl.transform);
+    const mesh_bvh = try buildBVHFromMeshes(alloc, mdl.meshes, @intCast(mdl.meshCount));
+
+    const inv = rl.Matrix.invert(mdl.transform);
+    try dst.append(.{
+        .model = mdl,
+        .class = class,
+        .color = rl.Color.dark_gray,
+        .bbox_ws = simd.toBoundingBoxSIMD(bb_w),
+        .bvh = mesh_bvh,
+        .transform_simd = simd.Mat4x4_SIMD.fromRlMatrix(mdl.transform),
+        .inv_transform_simd = simd.Mat4x4_SIMD.fromRlMatrix(inv),
+    });
+}
+
 pub fn pushObject(
     mesh: rl.Mesh,
     class: u32,
@@ -206,7 +233,7 @@ pub fn buildScene(
             3 => { // “grandpa” GLTF
                 var mdl = try rl.loadModel("resources/objects/grandpa/scene.gltf");
                 const scale = rl.Matrix.scale(0.01, 0.01, 0.01);
-                const rx = rl.Matrix.rotateX(0.0174532925 * 90.0);
+                const rx = rl.Matrix.rotateX(std.math.pi / 2.0);
                 mdl.transform = rl.Matrix.multiply(rx, rl.Matrix.multiply(scale, t));
 
                 const bb_l = getMeshesBoundingBoxPtr(mdl.meshes, @intCast(mdl.meshCount));

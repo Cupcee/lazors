@@ -18,6 +18,7 @@ fn toHitPointTx(item: state.ModelPlacerItem) rl.Matrix {
         .cube => rl.Matrix.translate(0, 0.5, 0), // 1 × 1 × 1  → +½
         .cylinder => rl.Matrix.translate(0, 2.0, 0), // height 4  → +2
         .sphere => rl.Matrix.translate(0, 1.5, 0), // Ø 3       → +1.5
+        .grandpa => rl.Matrix.identity(),
         else => rl.Matrix.identity(),
     };
 }
@@ -48,18 +49,15 @@ pub fn handleKeys(ctx: *state.State, contact: ?rl.Vector3, dt: f32, debug: *bool
     if (rl.isKeyDown(rl.KeyboardKey.one)) ctx.selected_model = state.ModelPlacerItem.cube;
     if (rl.isKeyDown(rl.KeyboardKey.two)) ctx.selected_model = state.ModelPlacerItem.cylinder;
     if (rl.isKeyDown(rl.KeyboardKey.three)) ctx.selected_model = state.ModelPlacerItem.sphere;
+    if (rl.isKeyDown(rl.KeyboardKey.four)) ctx.selected_model = state.ModelPlacerItem.grandpa;
 
     if (rl.isKeyReleased(rl.KeyboardKey.tab)) debug.* = !debug.*;
 
-    // ───────────────────────────────────────────────────────────
-    //  EDITOR MODE  (⇧ key held down)
-    // ───────────────────────────────────────────────────────────
     if (rl.isKeyDown(rl.KeyboardKey.left_shift) and contact != null) {
-        // first frame after ⇧ pressed: initialise editor state
         if (!ctx.show_editor) {
             ctx.show_editor = true;
-            ctx.editor_yaw = 0;
-            ctx.editor_scale = 1.0;
+            // ctx.editor_yaw = 0;
+            // ctx.editor_scale = 1.0;
         }
 
         // accumulate edits
@@ -78,7 +76,7 @@ pub fn handleKeys(ctx: *state.State, contact: ?rl.Vector3, dt: f32, debug: *bool
         // place the object with LMB
         if (rl.isMouseButtonPressed(rl.MouseButton.left)) {
             const pivotT = rl.Matrix.translate(contact.?.x, contact.?.y, contact.?.z);
-            const world_tx = rl.Matrix.multiply(ctx.editor_tx, pivotT); // pivot last!
+            const world_tx = rl.Matrix.multiply(ctx.editor_tx, pivotT);
 
             switch (ctx.selected_model) {
                 .cube => scene.pushObject(
@@ -89,18 +87,25 @@ pub fn handleKeys(ctx: *state.State, contact: ?rl.Vector3, dt: f32, debug: *bool
                     &ctx.models,
                     ctx.alloc,
                 ) catch unreachable,
-                .cylinder => scene.pushObject(
-                    rl.genMeshCylinder(2, 4, 12),
-                    1,
+                .sphere => scene.pushObject(
+                    rl.genMeshSphere(1.5, 12, 12),
+                    2,
                     rl.Color.dark_gray,
                     world_tx,
                     &ctx.models,
                     ctx.alloc,
                 ) catch unreachable,
-                .sphere => scene.pushObject(
-                    rl.genMeshSphere(1.5, 12, 12),
-                    1,
+                .cylinder => scene.pushObject(
+                    rl.genMeshCylinder(2, 4, 12),
+                    3,
                     rl.Color.dark_gray,
+                    world_tx,
+                    &ctx.models,
+                    ctx.alloc,
+                ) catch unreachable,
+                .grandpa => scene.pushGLTF(
+                    "resources/objects/grandpa/scene.gltf",
+                    4,
                     world_tx,
                     &ctx.models,
                     ctx.alloc,
@@ -217,6 +222,13 @@ pub fn drawGUI(
     }
 }
 
+pub fn drawModelWithMatrix(model: rl.Model, world_tx: rl.Matrix) void {
+    //    DrawModel(model, position,  scale,  tint);
+    for (0..@intCast(model.meshCount)) |i| {
+        rl.drawMesh(model.meshes[i], model.materials[i], world_tx);
+    }
+}
+
 pub fn draw3D(
     ctx: *state.State,
     simulation: *s.Simulation,
@@ -241,13 +253,39 @@ pub fn draw3D(
 
     // live preview of the placer object
     if (ctx.show_editor and contact != null) {
-        const pivotT = rl.Matrix.translate(contact.?.x, contact.?.y, contact.?.z);
-        const world_tx = rl.Matrix.multiply(ctx.editor_tx, pivotT);
+        const cp = contact.?;
+        const pivot_t = rl.Matrix.translate(cp.x, cp.y, cp.z);
 
         switch (ctx.selected_model) {
-            .cube => rl.drawMesh(ctx.preview_meshes.cube, ctx.preview_mat, world_tx),
-            .cylinder => rl.drawMesh(ctx.preview_meshes.cylinder, ctx.preview_mat, world_tx),
-            .sphere => rl.drawMesh(ctx.preview_meshes.sphere, ctx.preview_mat, world_tx),
+            .cube => {
+                const world_tx = rl.Matrix.multiply(pivot_t, ctx.editor_tx);
+                rl.drawMesh(ctx.preview_meshes.cube, ctx.preview_mat, world_tx);
+            },
+            .cylinder => {
+                const world_tx = rl.Matrix.multiply(pivot_t, ctx.editor_tx);
+                rl.drawMesh(ctx.preview_meshes.cylinder, ctx.preview_mat, world_tx);
+            },
+            .sphere => {
+                const world_tx = rl.Matrix.multiply(pivot_t, ctx.editor_tx);
+                rl.drawMesh(ctx.preview_meshes.sphere, ctx.preview_mat, world_tx);
+            },
+            .grandpa => {
+                // grandpa needs extra care because of the model file origin
+                const T_to_cp = rl.Matrix.translate(cp.x, cp.y, cp.z);
+                const T_from_cp = rl.Matrix.translate(-cp.x, -cp.y, -cp.z);
+
+                const S = rl.Matrix.scale(0.01, 0.01, 0.01);
+                const R = rl.Matrix.rotateX(std.math.pi / 2.0);
+
+                // editor_tx already contains your yaw-about-Y and possible “lift”
+                const SRL = rl.Matrix.multiply(rl.Matrix.multiply(S, R), ctx.editor_tx);
+
+                // build the sandwich:  -P  →  SRL  →  +P
+                var tx = rl.Matrix.multiply(T_from_cp, SRL); // -P then SRL
+                tx = rl.Matrix.multiply(tx, T_to_cp); // finally +P
+
+                drawModelWithMatrix(ctx.preview_meshes.grandpa, tx);
+            },
             else => unreachable,
         }
     }
