@@ -28,7 +28,6 @@ pub fn main() !void {
         \\-h, --help                   Display this help and exit.
         \\-n, --num_objects <u32>      Number of objects in simulation.
         \\-t, --target_fps <i32>       Number of objects in simulation.
-        \\-d, --plane_half_size <f32>      Size of the ground plane divided by two.
         \\--collect
         \\--collect_wait_seconds <f32> How many seconds to wait between collections.         
     );
@@ -51,7 +50,6 @@ pub fn main() !void {
     var simulation = structs.Simulation{
         .num_objects = args.num_objects orelse 3,
         .target_fps = args.target_fps orelse 30,
-        .plane_half_size = args.plane_half_size orelse 7.5,
         .collect = if (args.collect != 0) true else false,
         .collect_wait_seconds = args.collect_wait_seconds orelse 1.0,
     };

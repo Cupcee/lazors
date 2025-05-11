@@ -3,10 +3,11 @@ const rl = @import("raylib");
 const std = @import("std");
 const rand = std.Random;
 
-const s = @import("structs.zig");
+const structs = @import("structs.zig");
 const math = @import("math.zig");
 const bvh = @import("bvh.zig");
 const simd = @import("raylib_simd.zig");
+const fastnoise = @import("fastnoise.zig");
 
 //──────────────────────────────────────────────────────────────
 // Build BVH for a single Mesh
@@ -122,7 +123,7 @@ pub fn pushObjectAssumeCapacity(
     class: u32,
     color: rl.Color,
     transform: rl.Matrix,
-    dst: *std.ArrayListAligned(s.Object, null),
+    dst: *std.ArrayListAligned(structs.Object, null),
     alloc: std.mem.Allocator,
 ) !void {
     const mesh_bvh = try buildBVHFromMesh(alloc, mesh);
@@ -149,7 +150,7 @@ pub fn pushGLTF(
     file_name: [:0]const u8,
     class: u32,
     transform: rl.Matrix,
-    dst: *std.ArrayListAligned(s.Object, null),
+    dst: *std.ArrayListAligned(structs.Object, null),
     alloc: std.mem.Allocator,
 ) !void {
     var mdl = try rl.loadModel(file_name);
@@ -177,7 +178,7 @@ pub fn pushObject(
     class: u32,
     color: rl.Color,
     transform: rl.Matrix,
-    dst: *std.ArrayListAligned(s.Object, null),
+    dst: *std.ArrayListAligned(structs.Object, null),
     alloc: std.mem.Allocator,
 ) !void {
     const mesh_bvh = try buildBVHFromMesh(alloc, mesh);
@@ -207,9 +208,9 @@ pub fn buildScene(
     alloc: std.mem.Allocator,
     object_count: usize,
     num_classes: usize,
-    plane_half_size: f32,
-) !std.ArrayList(s.Object) {
-    var objs = try std.ArrayList(s.Object).initCapacity(alloc, object_count + 1);
+    terrain_width: f32,
+) !std.ArrayList(structs.Object) {
+    var objs = try std.ArrayList(structs.Object).initCapacity(alloc, object_count + 1);
     errdefer {
         for (objs.items) |o| rl.unloadModel(o.model);
         objs.deinit();
@@ -220,8 +221,8 @@ pub fn buildScene(
 
     for (0..object_count) |i| {
         const kind = i % (num_classes - 1);
-        const x = (rng.float(f32) * plane_half_size * 2) - plane_half_size;
-        const z = rng.float(f32) * plane_half_size * 2;
+        const x = (rng.float(f32) * terrain_width) - (terrain_width / 2);
+        const z = rng.float(f32) * terrain_width;
         const y = rng.float(f32) * 3.0;
 
         const t = rl.Matrix.translate(x, y, z);
@@ -273,16 +274,6 @@ pub fn buildScene(
             else => unreachable,
         }
     }
-
-    // ground plane
-    try pushObject(
-        rl.genMeshCube(plane_half_size * 2, 0.2, plane_half_size * 2),
-        0,
-        rl.Color.beige,
-        rl.Matrix.translate(0, -0.1, plane_half_size),
-        &objs,
-        alloc,
-    );
 
     return objs;
 }

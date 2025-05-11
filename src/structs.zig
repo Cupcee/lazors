@@ -29,7 +29,9 @@ pub const Simulation = struct {
     num_objects: u32 = 20,
     target_fps: i32 = 60,
     class_count: u32 = 6,
-    plane_half_size: f32 = 20.0,
+    map_size: i32 = 256,
+    terrain_width: f32 = 120.0,
+    terrain_height: f32 = 35.0,
     collect: bool = true,
     collect_wait_seconds: f32 = 0.1, // how long collector waits in seconds until next collection
 };

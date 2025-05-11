@@ -1,6 +1,6 @@
 const std = @import("std");
 const rl = @import("raylib"); // ziraylib package
-const s = @import("structs.zig");
+const structs = @import("structs.zig");
 const pcd = @import("pcd_exporter.zig");
 const state = @import("state.zig");
 const rlsimd = @import("raylib_simd.zig"); // ziraylib package
@@ -176,7 +176,7 @@ pub fn initCamera() struct { rl.Camera, rl.CameraMode } {
 
 pub fn drawGUI(
     ctx: *state.State,
-    simulation: *s.Simulation,
+    simulation: *structs.Simulation,
     total_hit_count: usize,
 ) void {
     rl.drawFPS(10, 10);
@@ -231,7 +231,7 @@ pub fn drawModelWithMatrix(model: rl.Model, world_tx: rl.Matrix) void {
 
 pub fn draw3D(
     ctx: *state.State,
-    simulation: *s.Simulation,
+    simulation: *structs.Simulation,
     contact: ?rl.Vector3,
 ) void {
     for (ctx.models.items) |model| {
@@ -250,6 +250,8 @@ pub fn draw3D(
             }
         }
     }
+
+    rl.drawModel(ctx.biome.model, .{ .x = -60, .y = 0, .z = -60 }, 1.0, rl.Color.white);
 
     // live preview of the placer object
     if (ctx.show_editor and contact != null) {

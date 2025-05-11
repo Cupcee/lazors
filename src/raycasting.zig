@@ -2,7 +2,7 @@ const rl = @import("raylib");
 const std = @import("std");
 const builtin = @import("builtin");
 const rand = std.Random;
-const s = @import("structs.zig");
+const structs = @import("structs.zig");
 const rlsimd = @import("raylib_simd.zig");
 const state = @import("state.zig");
 const Acquire = std.builtin.AtomicOrder.acquire;
@@ -23,12 +23,12 @@ pub const RaycastContext = struct {
     thread_id: usize,
     start_index: usize,
     end_index: usize,
-    sensor: *s.Sensor,
-    models: []const s.Object,
+    sensor: *structs.Sensor,
+    models: []const structs.Object,
     jitter_scale: f32,
     thread_prng: *rand.DefaultPrng,
     thread_hits: *std.ArrayList(ThreadHit),
-    points_slice: []s.RayPoint,
+    points_slice: []structs.RayPoint,
     skip: bool = false, // this allows skipping running the workload, if it is empty
 };
 
@@ -59,7 +59,7 @@ fn toModelSpaceRay(ray_ws: rl.Ray, inv: rl.Matrix) rl.Ray {
     return rl.Ray{ .position = pos, .direction = dir };
 }
 
-fn closestHitSIMD(ray_ws: rlsimd.RaySIMD, models: []const s.Object, max_range: f32) HitResult {
+fn closestHitSIMD(ray_ws: rlsimd.RaySIMD, models: []const structs.Object, max_range: f32) HitResult {
     var best = HitResult{ .distance = max_range };
 
     for (models) |m| {
@@ -93,7 +93,7 @@ fn closestHitSIMD(ray_ws: rlsimd.RaySIMD, models: []const s.Object, max_range: f
     return best;
 }
 
-fn closestHit(ray_ws: rl.Ray, models: []const s.Object, max_range: f32) HitResult {
+fn closestHit(ray_ws: rl.Ray, models: []const structs.Object, max_range: f32) HitResult {
     var best = HitResult{ .distance = max_range };
     for (models) |model| {
         // std.debug.print("{d}\n", .{model.class});
@@ -273,7 +273,7 @@ pub fn getNumThreads() usize {
     return @max(1, std.Thread.getCpuCount() catch 1);
 }
 
-pub fn getCameraRayContactPoint(camera: *rl.Camera, models: []s.Object) ?rl.Vector3 {
+pub fn getCameraRayContactPoint(camera: *rl.Camera, models: []structs.Object) ?rl.Vector3 {
     const origin = rlsimd.vec3ToVec4W(camera.position, 1.0);
     const target = rlsimd.vec3ToVec4W(camera.target, 1.0);
     const dir = rlsimd.normalizeSIMD(target - origin);

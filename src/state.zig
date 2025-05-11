@@ -1,12 +1,13 @@
 const std = @import("std");
 const rl = @import("raylib");
-const s = @import("structs.zig");
+const structs = @import("structs.zig");
 const rc = @import("raycasting.zig");
 const scene = @import("scene.zig");
 const sim = @import("simulation.zig");
 const pcd = @import("pcd_exporter.zig");
 const tp = @import("thread_pool.zig");
 const rlsimd = @import("raylib_simd.zig");
+const fn_biome = @import("biome.zig");
 
 const RayPool = tp.ThreadPool(rc.RaycastContext, rc.raycastWorker);
 pub const WIN_W = 1240;
@@ -24,15 +25,16 @@ pub const ModelPlacerItem = enum {
 pub const State = struct {
     alloc: std.mem.Allocator,
     //‑‑ persistent
-    simulation: *s.Simulation,
+    simulation: *structs.Simulation,
 
     //‑‑ graphics / IO
     camera: rl.Camera,
     camera_mode: rl.CameraMode,
-    models: std.ArrayList(s.Object),
+    models: std.ArrayList(structs.Object),
+    biome: fn_biome.Biome,
 
     //‑‑ sensor & drawing helpers
-    sensor: s.Sensor,
+    sensor: structs.Sensor,
     collision: rl.Mesh,
     inst_mats: []rl.Material,
     class_tx: []std.ArrayList(rl.Matrix),
@@ -63,7 +65,7 @@ pub const State = struct {
         // godzilla: rl.Model,
     },
 
-    pub fn init(alloc: std.mem.Allocator, sim_cfg: *s.Simulation) !State {
+    pub fn init(alloc: std.mem.Allocator, sim_cfg: *structs.Simulation) !State {
         //------------------------------------------------------------------
         //  Window & camera
         //------------------------------------------------------------------
@@ -80,13 +82,14 @@ pub const State = struct {
             alloc,
             sim_cfg.num_objects,
             sim_cfg.class_count,
-            sim_cfg.plane_half_size,
+            sim_cfg.terrain_width,
         );
+        const biome = try fn_biome.Biome.init(alloc, sim_cfg.map_size, sim_cfg.terrain_width, sim_cfg.terrain_height, 1337);
 
         //------------------------------------------------------------------
         //  Sensor
         //------------------------------------------------------------------
-        var sensor = try s.Sensor.init(alloc, 800, 192, 360, 70);
+        var sensor = try structs.Sensor.init(alloc, 800, 192, 360, 70);
         sensor.updateLocalAxes(sensor.fwd, sensor.up);
         const max_points = sensor.res_h * sensor.res_v;
 
@@ -143,6 +146,7 @@ pub const State = struct {
             .camera = cam,
             .camera_mode = cam_mode,
             .models = models,
+            .biome = biome,
             .sensor = sensor,
             .collision = cube,
             .inst_mats = inst_mats,
@@ -192,6 +196,7 @@ pub const State = struct {
             o.bvh.deinit();
         }
         self.models.deinit();
+        self.biome.deinit();
 
         rl.unloadMaterial(self.preview_mat);
         rl.unloadMesh(self.preview_meshes.cube);
