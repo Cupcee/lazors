@@ -15,13 +15,12 @@ pub const RayPoint = struct {
 pub const Object = struct {
     model: rl.Model,
     class: u32,
-    color: rl.Color,
-    /// world-space axis-aligned bounding box (step 1)
+    color: ?rl.Color = null,
     bbox_ws: rlsimd.BoundingBoxSIMD,
     bvh: bvh.BVH,
-    // inv_transform: rl.Matrix, // cached
     transform_simd: rlsimd.Mat4x4_SIMD,
     inv_transform_simd: rlsimd.Mat4x4_SIMD,
+    render: bool = true,
 };
 
 pub const Simulation = struct {

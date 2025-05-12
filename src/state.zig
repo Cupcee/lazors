@@ -78,13 +78,14 @@ pub const State = struct {
         //------------------------------------------------------------------
         //  Scene
         //------------------------------------------------------------------
-        const models = try scene.buildScene(
+        var models = try scene.buildScene(
             alloc,
             sim_cfg.num_objects,
             sim_cfg.class_count,
             sim_cfg.terrain_width,
         );
         const biome = try fn_biome.Biome.init(alloc, sim_cfg.map_size, sim_cfg.terrain_width, sim_cfg.terrain_height, 1337);
+        try models.append(biome.object);
 
         //------------------------------------------------------------------
         //  Sensor

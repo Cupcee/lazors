@@ -1,13 +1,18 @@
 const std = @import("std");
 const rl = @import("raylib");
 const fastnoise = @import("fastnoise.zig");
+const rlsimd = @import("raylib_simd.zig");
+const bvh = @import("bvh.zig");
+const math = @import("math.zig");
+const scene = @import("scene.zig");
+const structs = @import("structs.zig");
 
 pub const Biome = struct {
-    model: rl.Model,
     texture: rl.Texture2D,
     height_pixels: []u8,
     colour_pixels: []rl.Color,
     allocator: std.mem.Allocator,
+    object: structs.Object,
 
     /// Build a height-field mesh + colour texture from FastNoise.
     pub fn init(
@@ -99,13 +104,25 @@ pub const Biome = struct {
 
         const texture = try rl.loadTextureFromImage(img_colour);
         model.materials[0].maps[@intFromEnum(rl.MATERIAL_MAP_DIFFUSE)].texture = texture;
+        const mesh_bvh = try scene.buildBVHFromMesh(alloc, mesh);
+        const local_bb = rl.getMeshBoundingBox(mesh);
+        const world_bb = math.transformBBox(local_bb, model.transform);
+        const inv_tr = rl.Matrix.invert(model.transform);
 
         return Biome{
-            .model = model,
             .texture = texture,
             .height_pixels = height_buf,
             .colour_pixels = colour_buf,
             .allocator = alloc,
+            .object = structs.Object{
+                .model = model,
+                .class = 0,
+                .bbox_ws = rlsimd.toBoundingBoxSIMD(world_bb),
+                .bvh = mesh_bvh,
+                .transform_simd = rlsimd.Mat4x4_SIMD.fromRlMatrix(model.transform),
+                .inv_transform_simd = rlsimd.Mat4x4_SIMD.fromRlMatrix(inv_tr),
+                .render = false,
+            },
         };
     }
 
@@ -113,7 +130,7 @@ pub const Biome = struct {
     pub fn deinit(self: *Biome) void {
         // GPU objects
         rl.unloadTexture(self.texture);
-        rl.unloadModel(self.model);
+        rl.unloadModel(self.object.model);
         // heap buffers
         self.allocator.free(self.height_pixels);
         self.allocator.free(self.colour_pixels);

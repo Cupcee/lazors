@@ -222,8 +222,8 @@ pub fn buildScene(
     for (0..object_count) |i| {
         const kind = i % (num_classes - 1);
         const x = (rng.float(f32) * terrain_width) - (terrain_width / 2);
-        const z = rng.float(f32) * terrain_width;
-        const y = rng.float(f32) * 3.0;
+        const z = (rng.float(f32) * terrain_width) - (terrain_width / 2);
+        const y = rng.float(f32) * 3.0 + 10;
 
         const t = rl.Matrix.translate(x, y, z);
 
