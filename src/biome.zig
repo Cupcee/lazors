@@ -21,6 +21,7 @@ pub const Biome = struct {
         terrain_width: f32,
         terrain_height: f32,
         seed: i32,
+        position: rl.Vector3,
     ) !Biome {
         const Noise = fastnoise.Noise(f32);
 
@@ -83,7 +84,7 @@ pub const Biome = struct {
             .width = map_size,
             .height = map_size,
             .mipmaps = 1,
-            .format = rl.PixelFormat.uncompressed_r8g8b8a8,
+            .format = rl.PixelFormat.uncompressed_grayscale,
         };
 
         const img_colour = rl.Image{
@@ -101,6 +102,9 @@ pub const Biome = struct {
         );
 
         var model = try rl.loadModelFromMesh(mesh);
+
+        const transform = rl.Matrix.translate(position.x, position.y, position.z);
+        model.transform = transform;
 
         const texture = try rl.loadTextureFromImage(img_colour);
         model.materials[0].maps[@intFromEnum(rl.MATERIAL_MAP_DIFFUSE)].texture = texture;
@@ -130,7 +134,7 @@ pub const Biome = struct {
     pub fn deinit(self: *Biome) void {
         // GPU objects
         rl.unloadTexture(self.texture);
-        rl.unloadModel(self.object.model);
+        // rl.unloadModel(self.object.model);
         // heap buffers
         self.allocator.free(self.height_pixels);
         self.allocator.free(self.colour_pixels);

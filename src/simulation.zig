@@ -251,7 +251,7 @@ pub fn draw3D(
         }
     }
 
-    rl.drawModel(ctx.biome.object.model, .{ .x = -60, .y = 0, .z = -60 }, 1.0, rl.Color.white);
+    rl.drawModel(ctx.biome.object.model, .{ .x = 0, .y = 0, .z = 0 }, 1.0, rl.Color.white);
 
     // live preview of the placer object
     if (ctx.show_editor and contact != null) {

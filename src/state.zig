@@ -84,7 +84,14 @@ pub const State = struct {
             sim_cfg.class_count,
             sim_cfg.terrain_width,
         );
-        const biome = try fn_biome.Biome.init(alloc, sim_cfg.map_size, sim_cfg.terrain_width, sim_cfg.terrain_height, 1337);
+        const biome = try fn_biome.Biome.init(
+            alloc,
+            sim_cfg.map_size,
+            sim_cfg.terrain_width,
+            sim_cfg.terrain_height,
+            1337,
+            .{ .x = -60, .y = 0, .z = -60 },
+        );
         try models.append(biome.object);
 
         //------------------------------------------------------------------
